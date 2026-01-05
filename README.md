@@ -2,88 +2,119 @@
 
 **IGIS Asset Management - Quantitative Technical Analysis Tool**
 
-## Overview
-
 Volume-Confirmed Rejection 전략을 기반으로 한 익절 신호 스크리닝 도구입니다.
-엄격한 3가지 기술적 조건을 통해 백테스팅과 실시간 스크리닝을 지원합니다.
 
-## Strategy: Volume-Confirmed Rejection
+## 빠른 시작
 
-### 3가지 필수 조건
-
-1. **Trend Breakdown**: 현재가 < 20일 이동평균선
-2. **Rejection Pattern**: 상단 윅 비율 >= 0.5 (윅이 캔들 전체 길이의 50% 이상)
-3. **Volume Confirmation**: RVOL (상대 거래량) >= 2.0
-
-### 시그널 규칙
-
-- **SELL**: 3가지 조건이 모두 충족될 때만 발생
-  - Reasoning: "Valid technical breakdown confirmed by high volume."
-
-- **HOLD**: 조건 중 하나라도 미충족 시
-  - 특수 케이스: Price < 20MA + Wick >= 0.5 이지만 RVOL < 2.0인 경우
-  - Reasoning: "Pattern detected but lacks volume confirmation (Potential Trap)."
-
-## Installation
+### 방법 1: 간편 분석 (가장 추천!)
 
 ```bash
+# 1. 라이브러리 설치
 pip install -r requirements.txt
+
+# 2. start.py 실행 - 파일명만 입력하면 자동 분석!
+python start.py
 ```
 
-## Quick Start
+파일명을 입력하면 자동으로 RVOL, 20일선, 윗꼬리 패턴을 분석하고 상세 리포트를 제공합니다.
 
-### 1. 기본 사용법
+**입력 예시**:
+- 단일 종목: `sm.xlsx`
+- 여러 종목: `sm.xlsx, samsung.xlsx, apple.xlsx`
+- CSV 가능: `old_data.csv`
 
-```python
-from exit_signal_screener import ExitSignalScreener, load_data_from_csv
+**상세 가이드**: [CSV_ANALYSIS_GUIDE.md](CSV_ANALYSIS_GUIDE.md)
 
-# CSV 파일 로드 (필수 컬럼: Date, Open, High, Low, Close, Volume)
-df = load_data_from_csv('your_data.csv', date_column='Date')
+### 방법 2: 명령줄 도구
 
-# 스크리너 초기화
-screener = ExitSignalScreener(ma_period=20, rvol_period=20)
-
-# 지표 계산 및 필터 적용
-filtered_data = screener.apply_filters(df)
-
-# 스크리닝 결과 생성
-output = screener.generate_screening_output(filtered_data, ticker="AAPL")
-
-# SELL 신호만 추출
-sell_signals = output[output['Signal'] == 'SELL']
-print(sell_signals)
+```bash
+# tools 폴더의 스크립트 사용
+python tools/quick_analyze.py sm.xlsx
+python tools/quick_analyze.py sm.xlsx samsung.xlsx apple.xlsx
+python tools/analyze_stocks.py  # 대화형 분석
 ```
 
-### 2. 백테스팅 요약
-
-```python
-# 백테스트 통계 확인
-summary = screener.backtest_summary(filtered_data)
-for key, value in summary.items():
-    print(f"{key}: {value}")
-```
-
-### 3. 결과 저장
-
-```python
-# CSV 파일로 저장
-output.to_csv('screening_results.csv', index=False, encoding='utf-8-sig')
-```
-
-## File Structure
+## 프로젝트 구조
 
 ```
 taking_profit_screener/
-├── exit_signal_screener.py  # 메인 스크리너 클래스
-├── example_usage.py          # 다양한 사용 예시
-├── requirements.txt          # 필요 라이브러리
-└── README.md                 # 문서
+├── start.py                 ← 메인 실행 파일 (파일명만 입력!)
+│
+├── src/                     ← 핵심 모듈
+│   ├── screener.py         (신호 스크리닝)
+│   ├── optimizer.py        (파라미터 최적화)
+│   ├── analyzer.py         (종목 상세 분석)
+│   └── __init__.py         (패키지 초기화)
+│
+├── tools/                   ← 유틸리티 스크립트
+│   ├── quick_analyze.py    (명령줄 빠른 분석)
+│   ├── analyze_stocks.py   (대화형 분석)
+│   └── create_sample_data.py (샘플 데이터 생성)
+│
+├── examples/                ← 예시 코드
+├── docs/                    ← 상세 문서
+│   ├── README.md           (상세 설명)
+│   └── USAGE_GUIDE.md      (사용법 가이드)
+├── CSV_ANALYSIS_GUIDE.md    ← XLSX/CSV 분석 가이드
+└── requirements.txt
 ```
 
-## Input Data Format
+## 주요 기능
 
-CSV 파일은 다음 컬럼을 포함해야 합니다:
+### 1. 종목 분석 (start.py)
 
+**파일명만 입력하면 자동으로 분석합니다**:
+- 단일 종목: 상세 리포트 제공
+- 여러 종목: 조건별 분류 및 요약
+
+**분석 항목**:
+- 20일 이동평균선 대비 거리 및 상태
+- RVOL (상대 거래량) 강도 및 방향
+- 윗꼬리 패턴 분석
+- 종합 판정: SELL, HOLD 신호
+
+**조건별 분류**:
+- 강력 매도 (3개 조건 모두 충족)
+- 추세 하락만
+- 거래량 폭증만
+- 주의 필요 (추세하락 + 윅패턴)
+
+### 2. 파라미터 최적화
+
+**Python 코드로 사용**:
+- Random Search 최적화
+- Walk-Forward 최적화
+- 과최적화 방지
+- 실전 트레이딩용 파라미터 탐색
+
+상세 예시: [examples/](examples/) 폴더 참고
+
+## 전략 설명
+
+### Volume-Confirmed Rejection
+
+**3가지 조건이 모두 충족되면 SELL 신호 발생**:
+
+1. **추세 하락** (Trend Breakdown): 현재가 < 20일 이동평균
+2. **거부 패턴** (Rejection Pattern): 윗꼬리 비율 ≥ 50%
+3. **거래량 확인** (Volume Confirmation): RVOL ≥ 2.0
+
+## 입력 데이터 형식
+
+XLSX 또는 CSV 파일은 다음 컬럼을 포함해야 합니다:
+
+| 컬럼 | 설명 |
+|------|------|
+| Date | 날짜 (YYYY-MM-DD 권장) |
+| Open | 시가 |
+| High | 고가 |
+| Low | 저가 |
+| Close | 종가 |
+| Volume | 거래량 |
+
+**기본 경로**: `C:\Users\10845\OneDrive - 이지스자산운용\문서`
+
+예시:
 ```csv
 Date,Open,High,Low,Close,Volume
 2024-01-01,100.5,102.3,99.8,101.2,1500000
@@ -91,108 +122,113 @@ Date,Open,High,Low,Close,Volume
 ...
 ```
 
-## Output Format
+## 출력 결과
 
-스크리닝 결과는 다음 형식으로 출력됩니다:
+| Date | Current_Price | MA20 | Wick_Ratio | RVOL | Signal | Reasoning |
+|------|--------------|------|------------|------|--------|-----------|
+| 2024-03-15 | 175.50 | 180.20 | 0.65 | 2.3 | SELL | Valid technical breakdown confirmed by high volume. |
 
-```
-Ticker, Date, Current_Price, MA20, Wick_Ratio, RVOL, Signal, Reasoning
-```
+## 예시 코드
 
-### 출력 예시:
-
-```
-Ticker: AAPL
-Date: 2024-03-15
-Current_Price: 175.50
-MA20: 180.20
-Wick_Ratio: 0.65
-RVOL: 2.3
-Signal: SELL
-Reasoning: Valid technical breakdown confirmed by high volume.
-```
-
-## Key Features
-
-### 1. 지표 계산 함수
-
-- `calculate_sma()`: 단순 이동평균선
-- `calculate_wick_ratio()`: 상단 윅 비율
-- `calculate_rvol()`: 상대 거래량
-
-### 2. 필터링
-
-- `apply_filters()`: 모든 조건 체크 및 시그널 생성
-
-### 3. 백테스팅
-
-- `backtest_summary()`: 조건별 충족률, 시그널 발생 빈도 등
-
-## Examples
-
-[example_usage.py](example_usage.py)에서 다양한 사용 예시를 확인할 수 있습니다:
-
-1. **Example 1**: 기본 사용법
-2. **Example 2**: 여러 종목 동시 스크리닝
-3. **Example 3**: 커스텀 파라미터 (MA50, RVOL30 등)
-4. **Example 4**: 조건별 상세 분석
-5. **Example 5**: CSV 결과 저장
-
-실행:
-```bash
-python example_usage.py
-```
-
-## Advanced Usage
-
-### 커스텀 파라미터
+### 방법 1: 간단한 분석 (추천)
 
 ```python
-# 50일 이동평균, 30일 RVOL 사용
-screener = ExitSignalScreener(ma_period=50, rvol_period=30)
+from src import analyze_stock_from_csv, StockAnalyzer
+
+# XLSX 파일 분석
+result = analyze_stock_from_csv("sm.xlsx")
+
+# 결과 확인
+print(f"종목: {result['ticker']}")
+print(f"20일선 대비: {result['ma_distance_percent']:.2f}%")
+print(f"RVOL: {result['rvol']:.2f}배")
+print(f"신호: {result['signal']}")
+
+# 상세 리포트 출력
+analyzer = StockAnalyzer()
+report = analyzer.format_analysis_report(result)
+print(report)
 ```
 
-### 여러 종목 동시 분석
+### 방법 2: 여러 종목 일괄 분석
 
 ```python
-tickers = ['AAPL', 'MSFT', 'GOOGL']
-all_results = []
+from src import batch_analyze_stocks
 
-for ticker in tickers:
-    df = load_data_from_csv(f'{ticker}_data.csv', date_column='Date')
-    filtered_data = screener.apply_filters(df)
-    output = screener.generate_screening_output(filtered_data, ticker=ticker)
-    all_results.append(output[output['Signal'] == 'SELL'])
+# 여러 종목 분석
+results = batch_analyze_stocks(["sm.xlsx", "samsung.xlsx", "apple.xlsx"])
 
-combined = pd.concat(all_results, ignore_index=True)
+# SELL 신호만 필터링
+sell_signals = results[results['signal'] == 'SELL']
+print(sell_signals[['ticker', 'ma_distance_percent', 'rvol', 'signal_category']])
+
+# 결과 저장
+results.to_csv('analysis_results.csv', index=False, encoding='utf-8-sig')
 ```
 
-## Technical Details
+### 방법 3: 고급 스크리닝
 
-### Upper Wick Calculation
+```python
+from src import ExitSignalScreener, load_data_from_csv
 
+# 1. XLSX/CSV 파일 로드
+df = load_data_from_csv('my_data.xlsx', date_column='Date')
+
+# 2. 스크리너 초기화
+screener = ExitSignalScreener(ma_period=20, rvol_period=20)
+
+# 3. 분석 실행
+filtered_data = screener.apply_filters(df)
+output = screener.generate_screening_output(filtered_data, ticker="AAPL")
+
+# 4. SELL 신호만 추출
+sell_signals = output[output['Signal'] == 'SELL']
+print(sell_signals)
 ```
-Upper Wick = High - max(Open, Close)
-Total Candle Length = High - Low
-Wick Ratio = Upper Wick / Total Candle Length
+
+### 파라미터 최적화
+
+```python
+from src import ParameterOptimizer, load_data_from_csv
+
+# 1. 데이터 로드
+df = load_data_from_csv('my_data.csv', date_column='Date')
+
+# 2. 옵티마이저 초기화
+optimizer = ParameterOptimizer(df, ticker="AAPL", evaluation_metric='sharpe_ratio')
+
+# 3. Random Search 실행
+best_params, best_score = optimizer.random_search(
+    n_iterations=50,
+    param_ranges={
+        'ma_period': (15, 60),
+        'rvol_period': (10, 30),
+        'wick_threshold': (0.4, 0.7),
+        'rvol_threshold': (1.5, 3.5)
+    }
+)
+
+print(f"최적 파라미터: {best_params}")
+print(f"Sharpe Ratio: {best_score:.4f}")
 ```
 
-### RVOL Calculation
+## 더 알아보기
 
-```
-RVOL = Current Volume / Average Volume (20 periods)
-```
+- **상세 설명**: [docs/README.md](docs/README.md)
+- **사용법 가이드**: [docs/USAGE_GUIDE.md](docs/USAGE_GUIDE.md)
+- **예시 코드**: [examples/](examples/) 폴더 참고
 
-## Notes
+## 요구사항
 
-- 도지 캔들 (High = Low)의 경우 Wick Ratio는 0으로 처리됩니다
-- 초기 N일은 MA 및 RVOL 계산을 위해 NaN 값을 가질 수 있습니다
-- 모든 조건은 AND 연산으로 결합됩니다 (엄격한 필터링)
+- Python 3.7+
+- pandas >= 2.0.0
+- numpy >= 1.24.0
+- openpyxl >= 3.0.0 (XLSX 지원)
 
-## License
+## 라이선스
 
 MIT License
 
-## Contact
+## 문의
 
 IGIS Asset Management
