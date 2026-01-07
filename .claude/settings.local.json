@@ -5,7 +5,8 @@
       "Bash(dir /B)",
       "Bash(mkdir:*)",
       "Bash(git mv:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(winget install:*)"
     ]
   }
 }

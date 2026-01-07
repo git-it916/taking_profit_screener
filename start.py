@@ -103,13 +103,26 @@ def analyze_multiple(filenames):
 
         summary_data = []
         for _, row in results.iterrows():
+            # 20일선 하회일 포맷팅
+            break_below = row.get('last_ma20_break_below')
+            if pd.notna(break_below):
+                break_below_str = str(break_below).split()[0]  # 날짜만 추출
+            else:
+                break_below_str = "-"
+
+            # 전일대비 변동
+            price_change = row.get('price_change_percent', 0)
+            price_change_str = f"{price_change:+.1f}%" if price_change != 0 else "-"
+
             summary_data.append({
                 '종목': row['ticker'],
                 '현재가': f"{row['close_price']:.0f}",
-                '20일선': f"{row['ma_distance_percent']:+.1f}%",
+                '전일비': price_change_str,
+                '20일선': f"{row['ma20']:.0f}",
+                '괴리율': f"{row['ma_distance_percent']:+.1f}%",
+                '하회일': break_below_str,
                 'RVOL': f"{row['rvol']:.1f}배",
-                '신호': row['signal'],
-                '상태': row['signal_category']
+                '신호': row['signal']
             })
 
         df_summary = pd.DataFrame(summary_data)
@@ -132,21 +145,21 @@ def analyze_multiple(filenames):
         # 추세 하락만
         trend_down = results[
             results['condition_1_trend_breakdown'] &
-            ~results['condition_2_rejection_pattern'] &
-            ~results['condition_3_volume_confirmation']
+            ~results['condition_2_volume_confirmation']
         ]
         print(f"\n[추세 하락만] {len(trend_down)}개 종목:")
         if len(trend_down) > 0:
             for _, stock in trend_down.iterrows():
-                print(f"  - {stock['ticker']}: 20일선 대비 {stock['ma_distance_percent']:.2f}%")
+                break_below = stock.get('last_ma20_break_below')
+                break_below_str = str(break_below).split()[0] if pd.notna(break_below) else "데이터 없음"
+                print(f"  - {stock['ticker']}: 20일선 대비 {stock['ma_distance_percent']:.2f}%, 하회일: {break_below_str}")
         else:
             print("  없음")
 
         # RVOL 폭증만
         rvol_surge = results[
             ~results['condition_1_trend_breakdown'] &
-            ~results['condition_2_rejection_pattern'] &
-            results['condition_3_volume_confirmation']
+            results['condition_2_volume_confirmation']
         ]
         print(f"\n[거래량 폭증만] {len(rvol_surge)}개 종목:")
         if len(rvol_surge) > 0:
@@ -155,16 +168,17 @@ def analyze_multiple(filenames):
         else:
             print("  없음")
 
-        # 주의 필요 (추세하락 + 윅패턴)
+        # 주의 필요 (추세하락, 거래량 부족)
         caution = results[
             results['condition_1_trend_breakdown'] &
-            results['condition_2_rejection_pattern'] &
-            ~results['condition_3_volume_confirmation']
+            ~results['condition_2_volume_confirmation']
         ]
-        print(f"\n[주의 필요] {len(caution)}개 종목 (추세하락 + 윅패턴, 거래량만 부족):")
+        print(f"\n[주의 필요] {len(caution)}개 종목 (20일선 하회, 거래량 부족):")
         if len(caution) > 0:
             for _, stock in caution.iterrows():
-                print(f"  - {stock['ticker']}: 윅비율 {stock['wick_ratio']:.2f}, RVOL {stock['rvol']:.2f}배")
+                break_below = stock.get('last_ma20_break_below')
+                break_below_str = str(break_below).split()[0] if pd.notna(break_below) else "데이터 없음"
+                print(f"  - {stock['ticker']}: 하회일 {break_below_str}, RVOL {stock['rvol']:.2f}배")
         else:
             print("  없음")
 

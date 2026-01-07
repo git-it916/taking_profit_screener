@@ -47,6 +47,16 @@ class StockAnalyzer:
         # 최신 데이터 추출
         latest = filtered_data.iloc[-1]
 
+        # 어제 종가 (전일 종가)
+        if len(filtered_data) >= 2:
+            prev_close = filtered_data.iloc[-2]['Close']
+            price_change = latest['Close'] - prev_close
+            price_change_percent = (price_change / prev_close) * 100
+        else:
+            prev_close = None
+            price_change = 0
+            price_change_percent = 0
+
         # 20일선 근접도 계산
         ma_distance_percent = ((latest['Close'] - latest['MA20']) / latest['MA20']) * 100
         ma_distance_points = latest['Close'] - latest['MA20']
@@ -68,17 +78,24 @@ class StockAnalyzer:
 
         # 조건 충족 여부 체크
         condition_1 = latest['Condition_1_Trend_Breakdown']
-        condition_2 = latest['Condition_2_Rejection_Pattern']
-        condition_3 = latest['Condition_3_Volume_Confirmation']
+        condition_2 = latest['Condition_2_Volume_Confirmation']
 
         # 신호 분류
-        signal_category = self._classify_signal(condition_1, condition_2, condition_3)
+        signal_category = self._classify_signal(condition_1, condition_2)
+
+        # 20일선 하회/상회 날짜 정보
+        last_break_below = latest.get('Last_MA20_Break_Below', None)
+        last_break_above = latest.get('Last_MA20_Break_Above', None)
+        days_below_ma20 = latest.get('Days_Below_MA20', 0)
 
         # 결과 정리
         result = {
             'ticker': ticker,
             'date': latest.name if isinstance(filtered_data.index, pd.DatetimeIndex) else "N/A",
             'close_price': latest['Close'],
+            'prev_close': prev_close,
+            'price_change': price_change,
+            'price_change_percent': price_change_percent,
 
             # 20일선 분석
             'ma20': latest['MA20'],
@@ -87,16 +104,17 @@ class StockAnalyzer:
             'ma_status': ma_status,
             'condition_1_trend_breakdown': condition_1,
 
+            # 20일선 하회/상회 날짜 추적
+            'last_ma20_break_below': last_break_below,
+            'last_ma20_break_above': last_break_above,
+            'days_below_ma20': days_below_ma20,
+
             # RVOL 분석
             'rvol': latest['RVOL'],
             'rvol_strength': rvol_strength,
             'rvol_direction': rvol_direction,
             'rvol_change': rvol_change,
-            'condition_3_volume_confirmation': condition_3,
-
-            # 윅 패턴 분석
-            'wick_ratio': latest['Wick_Ratio'],
-            'condition_2_rejection_pattern': condition_2,
+            'condition_2_volume_confirmation': condition_2,
 
             # 종합 신호
             'signal': latest['Signal'],
@@ -136,22 +154,14 @@ class StockAnalyzer:
         else:
             return "20일선 아래 (멀리)"
 
-    def _classify_signal(self, cond1: bool, cond2: bool, cond3: bool) -> str:
+    def _classify_signal(self, cond1: bool, cond2: bool) -> str:
         """신호 분류"""
-        if cond1 and cond2 and cond3:
-            return "강력 매도 (3개 조건 모두 충족)"
-        elif cond1 and cond2:
-            return "주의 (추세하락 + 윅패턴, 거래량 부족)"
-        elif cond1 and cond3:
-            return "관찰 (추세하락 + 거래량, 윅패턴 없음)"
-        elif cond2 and cond3:
-            return "거짓 신호 가능 (윅패턴 + 거래량, 추세 양호)"
+        if cond1 and cond2:
+            return "강력 매도 (20일선 하회 + 거래량 폭증)"
         elif cond1:
-            return "추세 하락만"
+            return "추세 하락만 (거래량 부족)"
         elif cond2:
-            return "윅 패턴만"
-        elif cond3:
-            return "거래량 폭증만"
+            return "거래량 폭증만 (20일선 위)"
         else:
             return "정상 (신호 없음)"
 
@@ -164,12 +174,32 @@ class StockAnalyzer:
         report.append(f"\n날짜: {result['date']}")
         report.append(f"현재가: {result['close_price']:.2f}")
 
+        # 어제 종가 정보 추가
+        if result.get('prev_close'):
+            report.append(f"어제 종가: {result['prev_close']:.2f} (전일대비 {result['price_change']:+.2f}원, {result['price_change_percent']:+.2f}%)")
+
         report.append("\n" + "-" * 80)
         report.append("[1] 20일 이동평균선 분석")
         report.append("-" * 80)
-        report.append(f"  - 20일선: {result['ma20']:.2f}")
-        report.append(f"  - 20일선 대비 거리: {result['ma_distance_points']:+.2f}원 ({result['ma_distance_percent']:+.2f}%)")
+        report.append(f"  - 20일선 가격: {result['ma20']:.2f}")
+        report.append(f"  - 현재가 대비: {result['ma_distance_points']:+.2f}원 ({result['ma_distance_percent']:+.2f}%)")
         report.append(f"  - 상태: {result['ma_status']}")
+
+        # 20일선 하회/상회 날짜 정보 추가 (NEW)
+        if result.get('last_ma20_break_below'):
+            report.append(f"  - 최근 20일선 하회일: {result['last_ma20_break_below']}")
+        else:
+            report.append(f"  - 최근 20일선 하회일: 없음 (계속 20일선 위)")
+
+        if result.get('last_ma20_break_above'):
+            report.append(f"  - 최근 20일선 상회일: {result['last_ma20_break_above']}")
+        else:
+            report.append(f"  - 최근 20일선 상회일: 없음")
+
+        days_below = result.get('days_below_ma20', 0)
+        if days_below > 0:
+            report.append(f"  - 20일선 아래 경과일: {days_below}일")
+
         report.append(f"  - 조건 1 충족 여부: {'[O] 충족 (추세 하락)' if result['condition_1_trend_breakdown'] else '[X] 미충족 (추세 양호)'}")
 
         report.append("\n" + "-" * 80)
@@ -178,13 +208,7 @@ class StockAnalyzer:
         report.append(f"  - RVOL: {result['rvol']:.2f}배")
         report.append(f"  - 강도: {result['rvol_strength']}")
         report.append(f"  - 방향: {result['rvol_direction']} (전일 대비 {result['rvol_change']:+.2f})")
-        report.append(f"  - 조건 3 충족 여부: {'[O] 충족 (거래량 확인)' if result['condition_3_volume_confirmation'] else '[X] 미충족 (거래량 부족)'}")
-
-        report.append("\n" + "-" * 80)
-        report.append("[3] 윅 패턴 분석")
-        report.append("-" * 80)
-        report.append(f"  - 윅 비율: {result['wick_ratio']:.2f} ({result['wick_ratio']*100:.1f}%)")
-        report.append(f"  - 조건 2 충족 여부: {'[O] 충족 (거부 패턴)' if result['condition_2_rejection_pattern'] else '[X] 미충족 (윅 부족)'}")
+        report.append(f"  - 조건 2 충족 여부: {'[O] 충족 (거래량 확인)' if result['condition_2_volume_confirmation'] else '[X] 미충족 (거래량 부족)'}")
 
         report.append("\n" + "=" * 80)
         report.append("[종합 판정]")

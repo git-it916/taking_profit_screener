@@ -49,34 +49,6 @@ class ExitSignalScreener:
         """
         return df[column].rolling(window=self.ma_period).mean()
 
-    def calculate_wick_ratio(self, df: pd.DataFrame) -> pd.Series:
-        """
-        상단 윅(Upper Shadow) 비율 계산
-
-        Wick Ratio = Upper Wick Length / Total Candle Length
-        - Upper Wick = High - max(Open, Close)
-        - Total Candle = High - Low
-
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            OHLCV 데이터 (Open, High, Low, Close 필수)
-
-        Returns:
-        --------
-        pd.Series : 윅 비율 (0~1 사이 값)
-        """
-        upper_wick = df['High'] - df[['Open', 'Close']].max(axis=1)
-        total_candle = df['High'] - df['Low']
-
-        # 0으로 나누기 방지 (도지 캔들 등)
-        wick_ratio = np.where(
-            total_candle > 0,
-            upper_wick / total_candle,
-            0
-        )
-
-        return pd.Series(wick_ratio, index=df.index)
 
     def calculate_rvol(self, df: pd.DataFrame, volume_column: str = 'Volume') -> pd.Series:
         """
@@ -99,6 +71,82 @@ class ExitSignalScreener:
         rvol = df[volume_column] / avg_volume
 
         return rvol
+
+    def _track_ma_crossover(self, df: pd.DataFrame) -> pd.Series:
+        """
+        20일선 하회/상회 날짜 추적
+
+        각 시점에서:
+        - 가장 최근에 20일선을 하회한 날짜
+        - 가장 최근에 20일선을 상회한 날짜
+        - 20일선 아래에 머문 일수
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            MA20가 계산된 데이터프레임
+
+        Returns:
+        --------
+        pd.Series : 각 시점의 crossover 정보 딕셔너리
+        """
+        result = []
+        last_break_below = None
+        last_break_above = None
+        days_below = 0
+        prev_position = None  # 'above' or 'below'
+
+        for idx, row in df.iterrows():
+            if pd.isna(row['MA20']) or pd.isna(row['Close']):
+                result.append({
+                    'last_break_below': None,
+                    'last_break_above': None,
+                    'days_below': 0
+                })
+                continue
+
+            current_position = 'below' if row['Close'] < row['MA20'] else 'above'
+
+            # 첫 번째 유효한 데이터 - 초기 상태 설정
+            if prev_position is None:
+                if current_position == 'below':
+                    last_break_below = idx  # 데이터 시작부터 20일선 아래면 시작일을 하회일로 기록
+                    days_below = 1
+                prev_position = current_position
+                result.append({
+                    'last_break_below': last_break_below,
+                    'last_break_above': last_break_above,
+                    'days_below': days_below
+                })
+                continue
+
+            # 하회 감지 (위에서 아래로)
+            if prev_position == 'above' and current_position == 'below':
+                last_break_below = idx
+                days_below = 1
+
+            # 상회 감지 (아래에서 위로)
+            elif prev_position == 'below' and current_position == 'above':
+                last_break_above = idx
+                days_below = 0
+
+            # 20일선 아래에 계속 있는 경우
+            elif current_position == 'below' and prev_position == 'below':
+                days_below += 1
+
+            # 20일선 위에 계속 있는 경우
+            elif current_position == 'above':
+                days_below = 0
+
+            result.append({
+                'last_break_below': last_break_below,
+                'last_break_above': last_break_above,
+                'days_below': days_below
+            })
+
+            prev_position = current_position
+
+        return pd.Series(result, index=df.index)
 
     def apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -126,22 +174,23 @@ class ExitSignalScreener:
         # 1. 20일 이동평균선 계산
         result_df['MA20'] = self.calculate_sma(result_df)
 
-        # 2. 윅 비율 계산
-        result_df['Wick_Ratio'] = self.calculate_wick_ratio(result_df)
-
-        # 3. 상대 거래량 계산
+        # 2. 상대 거래량 계산
         result_df['RVOL'] = self.calculate_rvol(result_df)
 
-        # 4. 각 조건 체크
-        result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA20']
-        result_df['Condition_2_Rejection_Pattern'] = result_df['Wick_Ratio'] >= 0.5
-        result_df['Condition_3_Volume_Confirmation'] = result_df['RVOL'] >= 2.0
+        # 3. 20일선 하회/상회 날짜 추적
+        result_df['MA20_Cross'] = self._track_ma_crossover(result_df)
+        result_df['Last_MA20_Break_Below'] = result_df['MA20_Cross'].apply(lambda x: x['last_break_below'] if isinstance(x, dict) else None)
+        result_df['Last_MA20_Break_Above'] = result_df['MA20_Cross'].apply(lambda x: x['last_break_above'] if isinstance(x, dict) else None)
+        result_df['Days_Below_MA20'] = result_df['MA20_Cross'].apply(lambda x: x['days_below'] if isinstance(x, dict) else 0)
 
-        # 5. 신호 생성 (모든 조건이 TRUE일 때만 SELL)
+        # 4. 조건 체크 (20일선 하회 + RVOL만)
+        result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA20']
+        result_df['Condition_2_Volume_Confirmation'] = result_df['RVOL'] >= 2.0
+
+        # 5. 신호 생성 (두 조건 모두 충족시 SELL)
         result_df['All_Conditions_Met'] = (
             result_df['Condition_1_Trend_Breakdown'] &
-            result_df['Condition_2_Rejection_Pattern'] &
-            result_df['Condition_3_Volume_Confirmation']
+            result_df['Condition_2_Volume_Confirmation']
         )
 
         result_df['Signal'] = np.where(
@@ -153,21 +202,19 @@ class ExitSignalScreener:
         # 6. 시그널 설명 추가
         def generate_reasoning(row):
             if row['Signal'] == 'SELL':
-                return "Valid technical breakdown confirmed by high volume."
+                return "20일선 하회 + 거래량 폭증 확인"
             else:
                 # HOLD 이유 세부 분석
                 reasons = []
                 if not row['Condition_1_Trend_Breakdown']:
-                    reasons.append("Price above 20MA")
-                if not row['Condition_2_Rejection_Pattern']:
-                    reasons.append("No rejection pattern")
-                if not row['Condition_3_Volume_Confirmation']:
-                    reasons.append("Lacks volume confirmation")
+                    reasons.append("20일선 위")
+                if not row['Condition_2_Volume_Confirmation']:
+                    reasons.append("거래량 부족")
 
-                if row['Condition_1_Trend_Breakdown'] and row['Condition_2_Rejection_Pattern'] and not row['Condition_3_Volume_Confirmation']:
-                    return "Pattern detected but lacks volume confirmation (Potential Trap)."
+                if row['Condition_1_Trend_Breakdown'] and not row['Condition_2_Volume_Confirmation']:
+                    return "20일선 하회, 거래량 부족"
 
-                return f"Pattern incomplete: {', '.join(reasons)}."
+                return f"{', '.join(reasons)}"
 
         result_df['Reasoning'] = result_df.apply(generate_reasoning, axis=1)
 
@@ -223,8 +270,7 @@ class ExitSignalScreener:
 
         # 조건별 충족률
         condition_1_met = df['Condition_1_Trend_Breakdown'].sum()
-        condition_2_met = df['Condition_2_Rejection_Pattern'].sum()
-        condition_3_met = df['Condition_3_Volume_Confirmation'].sum()
+        condition_2_met = df['Condition_2_Volume_Confirmation'].sum()
 
         summary = {
             'Total_Trading_Days': total_days,
@@ -233,7 +279,6 @@ class ExitSignalScreener:
             'SELL_Signal_Rate': f"{(sell_signals / total_days * 100):.2f}%" if total_days > 0 else "N/A",
             'Condition_1_Met_Rate': f"{(condition_1_met / total_days * 100):.2f}%",
             'Condition_2_Met_Rate': f"{(condition_2_met / total_days * 100):.2f}%",
-            'Condition_3_Met_Rate': f"{(condition_3_met / total_days * 100):.2f}%",
         }
 
         return summary
