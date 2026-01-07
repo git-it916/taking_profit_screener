@@ -6,7 +6,9 @@
       "Bash(mkdir:*)",
       "Bash(git mv:*)",
       "Bash(pip install:*)",
-      "Bash(winget install:*)"
+      "Bash(winget install:*)",
+      "Bash(\"C:\\\\Users\\\\10845\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\nimport pandas as pd\nfrom openpyxl import load_workbook\n\n# LGENSOL 데이터 확인\nfile_path = r''C:\\\\Users\\\\10845\\\\OneDrive - 이지스자산운용\\\\문서\\\\LGENSOL.xlsx''\ndf = pd.read_excel\\(file_path\\)\nprint\\(''=== LGENSOL 데이터 확인 ===''\\)\nprint\\(f''전체 행 수: {len\\(df\\)}''\\)\nprint\\(f''\\\\n최근 5일 데이터:''\\)\nprint\\(df.tail\\(5\\)\\)\nprint\\(f''\\\\n컬럼명: {list\\(df.columns\\)}''\\)\n\")",
+      "Bash(\"C:\\\\Users\\\\10845\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\nimport pandas as pd\n\nfile_path = r''C:\\\\Users\\\\10845\\\\OneDrive - 이지스자산운용\\\\문서\\\\LGENSOL.xlsx''\ndf = pd.read_excel\\(file_path\\)\n\nprint\\(''=== LGENSOL 최종 데이터 ===''\\)\nprint\\(f''총 행 수: {len\\(df\\)}''\\)\nprint\\(f''\\\\n가장 최근 데이터:''\\)\nprint\\(df.tail\\(1\\)[[''Date'', ''Open'', ''High'', ''Low'', ''Close'', ''Volume'']]\\)\n\nprint\\(f''\\\\n최근 5일:''\\)\nprint\\(df.tail\\(5\\)[[''Date'', ''Close'']]\\)\n\")"
     ]
   }
 }

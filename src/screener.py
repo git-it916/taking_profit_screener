@@ -10,6 +10,71 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+def convert_to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    시간봉 데이터를 일봉으로 변환 (OHLCV 리샘플링)
+
+    ====================================================================
+    시간봉 → 일봉 변환 규칙:
+    ====================================================================
+    - Open: 하루 중 첫 번째 시간의 시가
+    - High: 하루 중 최고가
+    - Low: 하루 중 최저가
+    - Close: 하루 중 마지막 시간의 종가
+    - Volume: 하루 거래량 합계
+
+    예시:
+    2025-12-30 09:00: Open=369500, High=370000, Low=369000, Close=370000, Volume=1000
+    2025-12-30 10:00: Open=370000, High=371000, Low=369500, Close=370500, Volume=1500
+    2025-12-30 11:00: Open=370500, High=372000, Low=370000, Close=371000, Volume=2000
+
+    → 일봉 변환:
+    2025-12-30: Open=369500 (첫 시가), High=372000 (최고),
+                Low=369000 (최저), Close=371000 (마지막 종가),
+                Volume=4500 (합계)
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        시간봉 OHLCV 데이터 (Date 컬럼 필수)
+
+    Returns:
+    --------
+    pd.DataFrame : 일봉으로 변환된 데이터
+    """
+    # Date 컬럼이 있는지 확인
+    if 'Date' not in df.columns:
+        raise ValueError("Date 컬럼이 필요합니다.")
+
+    # Date를 datetime으로 변환
+    df_copy = df.copy()
+    df_copy['Date'] = pd.to_datetime(df_copy['Date'])
+
+    # Date를 인덱스로 설정
+    df_copy.set_index('Date', inplace=True)
+
+    # ====================================================================
+    # 일봉으로 리샘플링 ('D' = Daily)
+    # ====================================================================
+    daily_df = df_copy.resample('D').agg({
+        'Open': 'first',    # 하루 중 첫 번째 Open (장 시작 시가)
+        'High': 'max',      # 하루 중 최고가
+        'Low': 'min',       # 하루 중 최저가
+        'Close': 'last',    # 하루 중 마지막 Close (장 마감 종가)
+        'Volume': 'sum'     # 하루 거래량 합계
+    })
+
+    # NaN 제거 (거래가 없는 날)
+    daily_df.dropna(inplace=True)
+
+    # 인덱스를 Date 컬럼으로 복원
+    daily_df.reset_index(inplace=True)
+
+    print(f"[변환 완료] 시간봉 {len(df)}개 → 일봉 {len(daily_df)}개")
+
+    return daily_df
+
+
 class ExitSignalScreener:
     """
     기술적 지표 기반 익절 신호 스크리너
@@ -36,6 +101,28 @@ class ExitSignalScreener:
         """
         단순 이동평균선(SMA) 계산
 
+        ====================================================================
+        SMA (단순 이동평균선) 공식:
+        ====================================================================
+        SMA_20 = (P_1 + P_2 + P_3 + ... + P_20) / 20
+
+        여기서:
+        - P_1 = 오늘 종가 (가장 최근)
+        - P_2 = 1일 전 종가
+        - P_20 = 20일 전 종가 (가장 오래됨)
+
+        각 가격은 동등한 비중(1/20 = 5%)을 가집니다.
+
+        ====================================================================
+        계산 예시:
+        ====================================================================
+        날짜 1~19: MA20 = NaN (데이터 부족)
+        날짜 20: MA20 = (1일~20일 종가 합계) / 20
+        날짜 21: MA20 = (2일~21일 종가 합계) / 20  ← "이동": 1일 제외, 21일 추가
+        날짜 22: MA20 = (3일~22일 종가 합계) / 20  ← "이동": 2일 제외, 22일 추가
+
+        매일 가장 오래된 데이터는 제외되고 새 데이터가 추가되므로 "이동평균"
+
         Parameters:
         -----------
         df : pd.DataFrame
@@ -46,7 +133,11 @@ class ExitSignalScreener:
         Returns:
         --------
         pd.Series : 20일 이동평균선
+            - 초기 19일은 NaN (데이터 부족)
+            - 20일째부터 값이 계산됨
         """
+        # pandas의 rolling().mean()은 표준 SMA 공식과 100% 일치
+        # 검증: MA_CALCULATION_VERIFICATION.md 참조 (수동 계산과 차이 0.0000000000)
         return df[column].rolling(window=self.ma_period).mean()
 
 
@@ -54,7 +145,42 @@ class ExitSignalScreener:
         """
         상대 거래량(RVOL) 계산
 
-        RVOL = Current Volume / Average Volume (N periods)
+        ====================================================================
+        RVOL (Relative Volume) 공식:
+        ====================================================================
+        RVOL = 현재 거래량 / 과거 N일 평균 거래량
+
+        여기서 N = self.rvol_period (기본값: 20일)
+
+        ====================================================================
+        계산 예시: (N=20일 기준)
+        ====================================================================
+        날짜 20:
+            평균 거래량 = (1일~20일 거래량 합계) / 20
+            RVOL = 20일 거래량 / 평균 거래량
+
+        날짜 21:
+            평균 거래량 = (2일~21일 거래량 합계) / 20
+            RVOL = 21일 거래량 / 평균 거래량
+
+        실제 예:
+            평균 거래량 = 500,000주
+            오늘 거래량 = 1,000,000주
+            → RVOL = 1,000,000 / 500,000 = 2.0 (평균의 2배!)
+
+        ====================================================================
+        RVOL 해석:
+        ====================================================================
+        - RVOL = 1.0: 평균 수준의 거래량
+        - RVOL = 2.0: 평균의 2배 (거래량 폭증!) ← SELL 조건 충족선
+        - RVOL = 0.5: 평균의 절반 (거래량 부족)
+        - RVOL = 3.0+: 매우 강한 거래량 (특이 이벤트 가능성)
+
+        강도 분류:
+        - 매우 강함: RVOL ≥ 3.0
+        - 강함: 2.5 ≤ RVOL < 3.0
+        - 보통: 2.0 ≤ RVOL < 2.5  ← 조건 2 충족
+        - 약함: RVOL < 2.0
 
         Parameters:
         -----------
@@ -65,10 +191,28 @@ class ExitSignalScreener:
 
         Returns:
         --------
-        pd.Series : 상대 거래량
+        pd.Series : 상대 거래량 비율
+            - 값 범위: 0 ~ 무한대 (실제로는 0.1~10 사이가 일반적)
+            - 초기 19일은 NaN (평균 계산 불가)
         """
+        # ====================================================================
+        # [1단계] 과거 N일 평균 거래량 계산
+        # ====================================================================
+        # rolling(window=20).mean() → 최근 20일 거래량의 평균
         avg_volume = df[volume_column].rolling(window=self.rvol_period).mean()
+
+        # DEBUG: 평균 거래량 확인용 (필요시 주석 해제)
+        # print(f"평균 거래량 최근 5일:\n{avg_volume.tail()}")
+
+        # ====================================================================
+        # [2단계] RVOL 계산 (현재 거래량 / 평균 거래량)
+        # ====================================================================
+        # 예: 현재 거래량 = 1,000,000, 평균 거래량 = 500,000
+        #     → RVOL = 2.0 (평균의 2배! → SELL 조건 충족)
         rvol = df[volume_column] / avg_volume
+
+        # DEBUG: RVOL 확인용 (필요시 주석 해제)
+        # print(f"RVOL 최근 5일:\n{rvol.tail()}")
 
         return rvol
 
@@ -90,13 +234,25 @@ class ExitSignalScreener:
         --------
         pd.Series : 각 시점의 crossover 정보 딕셔너리
         """
-        result = []
-        last_break_below = None
-        last_break_above = None
-        days_below = 0
-        prev_position = None  # 'above' or 'below'
+        result = []  # 각 날짜별 결과를 저장할 리스트
 
+        # ====================================================================
+        # 추적 변수 초기화
+        # ====================================================================
+        last_break_below = None  # 마지막으로 20일선을 하회한 날짜 (위 → 아래로 내려간 날)
+        last_break_above = None  # 마지막으로 20일선을 상회한 날짜 (아래 → 위로 올라간 날)
+        days_below = 0           # 20일선 아래에 머문 일수 (연속으로 아래에 있었던 일수)
+        prev_position = None     # 이전 시점의 위치 ('above' 또는 'below')
+
+        # ====================================================================
+        # 데이터프레임의 모든 행을 순회하며 하회/상회 추적
+        # ====================================================================
         for idx, row in df.iterrows():
+            # ================================================================
+            # [1단계] MA20 또는 Close가 없는 경우 처리
+            # ================================================================
+            # MA20은 20일치 데이터가 있어야 계산되므로, 초기 19일은 NaN입니다.
+            # 이 경우 추적 불가능하므로 None 반환
             if pd.isna(row['MA20']) or pd.isna(row['Close']):
                 result.append({
                     'last_break_below': None,
@@ -105,14 +261,31 @@ class ExitSignalScreener:
                 })
                 continue
 
+            # ================================================================
+            # [2단계] 현재 위치 판단
+            # ================================================================
+            # 종가와 20일선을 비교하여 현재 위치 결정:
+            # - Close < MA20 → 'below' (20일선 아래)
+            # - Close >= MA20 → 'above' (20일선 위 또는 동일)
             current_position = 'below' if row['Close'] < row['MA20'] else 'above'
 
-            # 첫 번째 유효한 데이터 - 초기 상태 설정
+            # DEBUG: 현재 위치 확인용 (필요시 주석 해제)
+            # print(f"{idx}: Close={row['Close']:.2f}, MA20={row['MA20']:.2f}, Position={current_position}")
+
+            # ================================================================
+            # [3단계] 첫 번째 유효한 데이터 처리
+            # ================================================================
+            # prev_position이 None이면 이것이 첫 번째 유효 데이터입니다.
             if prev_position is None:
+                # 데이터 시작부터 이미 20일선 아래에 있으면
+                # 시작 날짜를 하회일로 기록합니다.
                 if current_position == 'below':
-                    last_break_below = idx  # 데이터 시작부터 20일선 아래면 시작일을 하회일로 기록
+                    last_break_below = idx  # 첫 날짜를 하회일로 설정
                     days_below = 1
-                prev_position = current_position
+                    # DEBUG: 첫 데이터가 하회 상태
+                    # print(f"  → 첫 데이터: 20일선 아래 시작, 하회일={idx}")
+
+                prev_position = current_position  # 다음 루프를 위해 현재 위치 저장
                 result.append({
                     'last_break_below': last_break_below,
                     'last_break_above': last_break_above,
@@ -120,32 +293,66 @@ class ExitSignalScreener:
                 })
                 continue
 
-            # 하회 감지 (위에서 아래로)
+            # ================================================================
+            # [4단계] 하회 감지 (위 → 아래)
+            # ================================================================
+            # 이전: 20일선 위(above), 현재: 20일선 아래(below)
+            # → 이 시점에 20일선을 "하회"한 것!
             if prev_position == 'above' and current_position == 'below':
-                last_break_below = idx
-                days_below = 1
+                last_break_below = idx  # 현재 날짜를 "하회일"로 기록
+                days_below = 1          # 하회 경과일 1일로 초기화
+                # DEBUG: 하회 감지
+                # print(f"  → 하회 감지! {idx}에 20일선 아래로 내려감")
+                # print(f"     Close={row['Close']:.2f} < MA20={row['MA20']:.2f}")
 
-            # 상회 감지 (아래에서 위로)
+            # ================================================================
+            # [5단계] 상회 감지 (아래 → 위)
+            # ================================================================
+            # 이전: 20일선 아래(below), 현재: 20일선 위(above)
+            # → 이 시점에 20일선을 "상회"한 것!
             elif prev_position == 'below' and current_position == 'above':
-                last_break_above = idx
-                days_below = 0
+                last_break_above = idx  # 현재 날짜를 "상회일"로 기록
+                days_below = 0          # 하회 경과일 0으로 리셋 (더 이상 아래에 없음)
+                # DEBUG: 상회 감지
+                # print(f"  → 상회 감지! {idx}에 20일선 위로 올라감")
+                # print(f"     Close={row['Close']:.2f} >= MA20={row['MA20']:.2f}")
 
-            # 20일선 아래에 계속 있는 경우
+            # ================================================================
+            # [6단계] 20일선 아래에 계속 머무는 경우
+            # ================================================================
+            # 이전: 아래(below), 현재: 아래(below)
+            # → 계속 아래에 머물고 있으므로 경과일만 1일 증가
             elif current_position == 'below' and prev_position == 'below':
-                days_below += 1
+                days_below += 1  # 하회 경과일 1일 증가
+                # DEBUG: 계속 아래에 있음
+                # print(f"  → 계속 아래: {days_below}일째 (Close={row['Close']:.2f}, MA20={row['MA20']:.2f})")
 
-            # 20일선 위에 계속 있는 경우
+            # ================================================================
+            # [7단계] 20일선 위에 계속 머무는 경우
+            # ================================================================
+            # 이전: 위(above), 현재: 위(above)
+            # → 계속 위에 있으므로 경과일은 0 유지
             elif current_position == 'above':
-                days_below = 0
+                days_below = 0  # 위에 있으면 경과일은 항상 0
+                # DEBUG: 계속 위에 있음
+                # print(f"  → 계속 위: 경과일 0 (Close={row['Close']:.2f}, MA20={row['MA20']:.2f})")
 
+            # ================================================================
+            # [8단계] 현재 날짜의 결과 저장
+            # ================================================================
             result.append({
-                'last_break_below': last_break_below,
-                'last_break_above': last_break_above,
-                'days_below': days_below
+                'last_break_below': last_break_below,  # 가장 최근 하회일
+                'last_break_above': last_break_above,  # 가장 최근 상회일
+                'days_below': days_below               # 현재까지 하회 경과일
             })
 
+            # ================================================================
+            # [9단계] 다음 루프를 위해 현재 위치를 이전 위치로 저장
+            # ================================================================
             prev_position = current_position
 
+        # 결과를 pandas Series로 변환하여 반환
+        # index는 원본 데이터프레임의 index(날짜)와 동일하게 유지
         return pd.Series(result, index=df.index)
 
     def apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -284,9 +491,16 @@ class ExitSignalScreener:
         return summary
 
 
-def load_data_from_csv(filepath: str, date_column: Optional[str] = None) -> pd.DataFrame:
+def load_data_from_csv(filepath: str, date_column: Optional[str] = None, convert_daily: bool = True) -> pd.DataFrame:
     """
     CSV 또는 XLSX 파일에서 OHLCV 데이터 로드
+
+    ====================================================================
+    중요: 시간봉 → 일봉 자동 변환
+    ====================================================================
+    블룸버그 등에서 다운로드한 시간봉 데이터는 자동으로 일봉으로 변환됩니다.
+    - 시간봉 감지 기준: 같은 날짜에 여러 행이 있는 경우
+    - 변환 방법: OHLCV 리샘플링 (convert_to_daily 함수)
 
     Parameters:
     -----------
@@ -294,17 +508,50 @@ def load_data_from_csv(filepath: str, date_column: Optional[str] = None) -> pd.D
         CSV 또는 XLSX 파일 경로
     date_column : str, optional
         날짜 컬럼명 (인덱스로 설정)
+    convert_daily : bool
+        시간봉을 일봉으로 자동 변환 (기본값: True)
 
     Returns:
     --------
-    pd.DataFrame : OHLCV 데이터
+    pd.DataFrame : OHLCV 데이터 (일봉)
     """
-    # 파일 확장자에 따라 로드 방법 선택
+    # ====================================================================
+    # [1단계] 파일 로드
+    # ====================================================================
     if filepath.endswith('.xlsx') or filepath.endswith('.xls'):
         df = pd.read_excel(filepath)
     else:
         df = pd.read_csv(filepath)
 
+    # ====================================================================
+    # [2단계] 시간봉 감지 및 일봉 변환
+    # ====================================================================
+    # Date 컬럼이 있고, convert_daily=True인 경우 시간봉 여부 확인
+    if convert_daily and 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+
+        # 같은 날짜에 여러 행이 있는지 확인 (시간봉 감지)
+        df['Date_Only'] = df['Date'].dt.date
+        date_counts = df['Date_Only'].value_counts()
+
+        if (date_counts > 1).any():
+            # 시간봉 데이터 감지!
+            print(f"\n[시간봉 감지] 같은 날짜에 최대 {date_counts.max()}개 행")
+            print(f"   >> 일봉으로 자동 변환합니다...")
+
+            # Date_Only 컬럼 제거
+            df.drop('Date_Only', axis=1, inplace=True)
+
+            # 일봉으로 변환
+            df = convert_to_daily(df)
+        else:
+            # 이미 일봉 데이터
+            print(f"\n[일봉 확인] {len(df)}일 데이터")
+            df.drop('Date_Only', axis=1, inplace=True)
+
+    # ====================================================================
+    # [3단계] 날짜 인덱스 설정 (선택적)
+    # ====================================================================
     if date_column and date_column in df.columns:
         df[date_column] = pd.to_datetime(df[date_column])
         df.set_index(date_column, inplace=True)

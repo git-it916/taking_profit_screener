@@ -2,90 +2,177 @@
 
 **IGIS Asset Management - Quantitative Technical Analysis Tool**
 
-## Overview
+매일 아침 300개 펀드 종목의 20일 이동평균선 하회 여부와 거래량 분석을 통한 모니터링 도구입니다.
 
-Volume-Confirmed Rejection 전략을 기반으로 한 익절 신호 스크리닝 도구입니다.
-엄격한 3가지 기술적 조건을 통해 백테스팅과 실시간 스크리닝을 지원합니다.
-
-## Strategy: Volume-Confirmed Rejection
-
-### 3가지 필수 조건
-
-1. **Trend Breakdown**: 현재가 < 20일 이동평균선
-2. **Rejection Pattern**: 상단 윅 비율 >= 0.5 (윅이 캔들 전체 길이의 50% 이상)
-3. **Volume Confirmation**: RVOL (상대 거래량) >= 2.0
-
-### 시그널 규칙
-
-- **SELL**: 3가지 조건이 모두 충족될 때만 발생
-  - Reasoning: "Valid technical breakdown confirmed by high volume."
-
-- **HOLD**: 조건 중 하나라도 미충족 시
-  - 특수 케이스: Price < 20MA + Wick >= 0.5 이지만 RVOL < 2.0인 경우
-  - Reasoning: "Pattern detected but lacks volume confirmation (Potential Trap)."
-
-## Installation
+## 빠른 시작
 
 ```bash
+# 1. 라이브러리 설치
 pip install -r requirements.txt
+
+# 2. start.py 실행 - 통합 워크플로우!
+python start.py
 ```
 
-## Quick Start
+### 실행 방법
 
-### 1. 기본 사용법
-
-```python
-from exit_signal_screener import ExitSignalScreener, load_data_from_csv
-
-# CSV 파일 로드 (필수 컬럼: Date, Open, High, Low, Close, Volume)
-df = load_data_from_csv('your_data.csv', date_column='Date')
-
-# 스크리너 초기화
-screener = ExitSignalScreener(ma_period=20, rvol_period=20)
-
-# 지표 계산 및 필터 적용
-filtered_data = screener.apply_filters(df)
-
-# 스크리닝 결과 생성
-output = screener.generate_screening_output(filtered_data, ticker="AAPL")
-
-# SELL 신호만 추출
-sell_signals = output[output['Signal'] == 'SELL']
-print(sell_signals)
+**옵션 1: Bloomberg Terminal (권장 - 300개 종목 실시간 분석)**
+```bash
+python start.py
+# → 1 선택: Bloomberg Terminal
+# → 1 선택: 한글 종목명 입력
+# → 종목명 입력: 삼성전자, SK하이닉스, LG에너지솔루션, ...
+# → 자동으로 티커 변환 → 다운로드 → 분석
 ```
 
-### 2. 백테스팅 요약
-
-```python
-# 백테스트 통계 확인
-summary = screener.backtest_summary(filtered_data)
-for key, value in summary.items():
-    print(f"{key}: {value}")
+**옵션 2: 로컬 파일**
+```bash
+python start.py
+# → 2 선택: 로컬 파일
+# → 파일명 입력: samsung.xlsx, lg.xlsx, sk.xlsx
 ```
 
-### 3. 결과 저장
+**입력 방법**:
+- 한글 종목명: `삼성전자, SK하이닉스, 네이버` (자동 변환)
+- Bloomberg 티커: `005930 KS, 000660 KS, 035420 KS`
+- 파일에서 읽기: `.txt`, `.xlsx` 파일 지원
 
-```python
-# CSV 파일로 저장
-output.to_csv('screening_results.csv', index=False, encoding='utf-8-sig')
+## 주요 기능
+
+### 1. 20일선 하회/상회 추적
+- **가장 최근 20일선 하회일** 기록
+- **가장 최근 20일선 상회일** 기록
+- **20일선 아래 경과일** 계산
+- **20일선 가격** 명시적 표시
+
+### 2. RVOL (상대 거래량) 분석
+- 현재 거래량 / 20일 평균 거래량
+- 강도 분류: 매우 강함(3배+), 강함(2.5~3배), 보통(2~2.5배)
+- 전일 대비 방향 (상승/하락)
+
+## 출력 예시
+
+### 요약 테이블
+```
+종목    현재가  전일비  20일선  괴리율    하회일      RVOL  신호
+SM      89    -2.4%   92    -3.3%  2025-10-18  2.3배  SELL
+SAMSUNG 86    +0.3%   87    -1.9%  2025-10-18  1.1배  HOLD
+APPLE   111   +1.0%   109   +1.6%  2025-11-28  1.0배  HOLD
 ```
 
-## File Structure
+**컬럼 설명**:
+- **현재가**: 오늘 종가
+- **전일비**: 어제 대비 변동률 (%)
+- **20일선**: 20일 이동평균선 가격
+- **괴리율**: 현재가와 20일선 간 괴리율 (%)
+- **하회일**: 가장 최근 20일선 하회 날짜
+- **RVOL**: 상대 거래량 (배수)
+- **신호**: SELL / HOLD
+
+### 상세 리포트
+```
+================================================================================
+종목 분석 리포트: SAMSUNG
+================================================================================
+
+날짜: 2026-01-06
+현재가: 88.92
+어제 종가: 91.07 (전일대비 -2.15원, -2.36%)
+
+[1] 20일 이동평균선 분석
+  - 20일선 가격: 91.93
+  - 현재가 대비: -3.01원 (-3.27%)
+  - 상태: 20일선 아래 (근접)
+  - 최근 20일선 하회일: 2025-10-18
+  - 최근 20일선 상회일: 없음
+  - 20일선 아래 경과일: 81일
+  - 조건 1 충족 여부: [O] 충족 (추세 하락)
+
+[2] RVOL (상대 거래량) 분석
+  - RVOL: 2.22배
+  - 강도: 보통 (2~2.5배)
+  - 방향: 상승 (전일 대비 +1.33)
+  - 조건 2 충족 여부: [O] 충족 (거래량 확인)
+
+[종합 판정]
+  신호: SELL
+  분류: 강력 매도 (20일선 하회 + 거래량 폭증)
+```
+
+## 프로젝트 구조
 
 ```
 taking_profit_screener/
-├── exit_signal_screener.py   # 메인 스크리너 클래스
-├── parameter_optimizer.py     # 파라미터 최적화 클래스
-├── example_usage.py           # 스크리너 사용 예시
-├── optimization_examples.py   # 최적화 사용 예시
-├── requirements.txt           # 필요 라이브러리
-└── README.md                  # 문서
+├── start.py                 ← 통합 메인 실행 파일 (한글 → 티커 → 분석)
+├── start_bloomberg.py       ← Bloomberg 전용 (티커만 입력)
+├── run.bat                  ← Windows 실행 파일 (start.py)
+├── run_bloomberg.bat        ← Windows 실행 파일 (start_bloomberg.py)
+│
+├── src/                     ← 핵심 모듈
+│   ├── screener.py          (20일선, RVOL 계산, 시간봉→일봉 변환)
+│   ├── analyzer.py          (종목 상세 분석)
+│   ├── bloomberg.py         (Bloomberg API 연동)
+│   ├── ticker_converter.py  (한글 종목명 → Bloomberg 티커 변환)
+│   └── optimizer.py         (파라미터 최적화)
+│
+├── utils/                   ← 유틸리티 스크립트
+│   ├── convert_tickers.py   (종목명 변환 전용 도구)
+│   └── debug_crossover.py   (20일선 하회일 디버깅 도구)
+│
+├── docs/                    ← 상세 문서
+│   ├── README.md
+│   ├── CLAUDE.md
+│   ├── BLOOMBERG_GUIDE.md
+│   ├── TICKER_CONVERSION_GUIDE.md
+│   └── MA_CALCULATION_VERIFICATION.md
+│
+└── ticker_mapping_template.xlsx  ← 추가 종목 매핑 템플릿
 ```
 
-## Input Data Format
+## 새로운 기능 (2026-01-07)
 
-CSV 파일은 다음 컬럼을 포함해야 합니다:
+### 1. 한글 종목명 자동 변환
+- **50개 이상 주요 종목** 사전 등록
+- **엑셀 파일**로 추가 종목 매핑 가능
+- **300개 종목 일괄 변환** 지원
 
+### 2. Bloomberg Terminal 통합
+- 로컬 파일 저장 없이 **실시간 다운로드**
+- **xbbg 라이브러리** 사용 (blpapi 대체)
+- **일괄 다운로드** 지원
+
+### 3. 통합 워크플로우
+- **start.py** 하나로 모든 기능 통합:
+  1. 데이터 소스 선택 (Bloomberg / 로컬)
+  2. 입력 방법 선택 (한글 / 티커 / 파일)
+  3. 자동 변환 및 다운로드
+  4. 분석 및 리포트
+
+## 전략 설명
+
+### 20일선 + RVOL 전략
+
+**2가지 조건이 모두 충족되면 SELL 신호 발생**:
+
+1. **추세 하락** (Trend Breakdown): 현재가 < 20일 이동평균
+2. **거래량 확인** (Volume Confirmation): RVOL ≥ 2.0
+
+## 입력 데이터 형식
+
+XLSX 또는 CSV 파일은 다음 컬럼을 포함해야 합니다:
+
+| 컬럼 | 설명 |
+|------|------|
+| Date | 날짜 (YYYY-MM-DD 권장) |
+| Open | 시가 |
+| High | 고가 |
+| Low | 저가 |
+| Close | 종가 |
+| Volume | 거래량 |
+
+**기본 경로**: `C:\Users\10845\OneDrive - 이지스자산운용\문서`
+
+예시:
 ```csv
 Date,Open,High,Low,Close,Volume
 2024-01-01,100.5,102.3,99.8,101.2,1500000
@@ -93,228 +180,160 @@ Date,Open,High,Low,Close,Volume
 ...
 ```
 
-## Output Format
+## Python 코드로 사용하기
 
-스크리닝 결과는 다음 형식으로 출력됩니다:
-
-```
-Ticker, Date, Current_Price, MA20, Wick_Ratio, RVOL, Signal, Reasoning
-```
-
-### 출력 예시:
-
-```
-Ticker: AAPL
-Date: 2024-03-15
-Current_Price: 175.50
-MA20: 180.20
-Wick_Ratio: 0.65
-RVOL: 2.3
-Signal: SELL
-Reasoning: Valid technical breakdown confirmed by high volume.
-```
-
-## Key Features
-
-### 1. 지표 계산 함수
-
-- `calculate_sma()`: 단순 이동평균선
-- `calculate_wick_ratio()`: 상단 윅 비율
-- `calculate_rvol()`: 상대 거래량
-
-### 2. 필터링
-
-- `apply_filters()`: 모든 조건 체크 및 시그널 생성
-
-### 3. 백테스팅
-
-- `backtest_summary()`: 조건별 충족률, 시그널 발생 빈도 등
-
-## Examples
-
-[example_usage.py](example_usage.py)에서 다양한 사용 예시를 확인할 수 있습니다:
-
-1. **Example 1**: 기본 사용법
-2. **Example 2**: 여러 종목 동시 스크리닝
-3. **Example 3**: 커스텀 파라미터 (MA50, RVOL30 등)
-4. **Example 4**: 조건별 상세 분석
-5. **Example 5**: CSV 결과 저장
-
-실행:
-```bash
-python example_usage.py
-```
-
-## Advanced Usage
-
-### 커스텀 파라미터
+### 단일 종목 분석
 
 ```python
-# 50일 이동평균, 30일 RVOL 사용
-screener = ExitSignalScreener(ma_period=50, rvol_period=30)
+from src import analyze_stock_from_csv, StockAnalyzer
+
+# XLSX 파일 분석
+result = analyze_stock_from_csv("samsung.xlsx")
+
+# 결과 확인
+print(f"종목: {result['ticker']}")
+print(f"현재가: {result['close_price']:.2f}")
+print(f"어제 종가: {result['prev_close']:.2f}")
+print(f"20일선 가격: {result['ma20']:.2f}")
+print(f"20일선 괴리율: {result['ma_distance_percent']:.2f}%")
+print(f"20일선 하회일: {result['last_ma20_break_below']}")
+print(f"RVOL: {result['rvol']:.2f}배")
+print(f"신호: {result['signal']}")
+
+# 상세 리포트 출력
+analyzer = StockAnalyzer()
+report = analyzer.format_analysis_report(result)
+print(report)
 ```
 
-### 여러 종목 동시 분석
+### 여러 종목 일괄 분석 (300개 펀드 종목)
 
 ```python
-tickers = ['AAPL', 'MSFT', 'GOOGL']
-all_results = []
+from src import batch_analyze_stocks
 
-for ticker in tickers:
-    df = load_data_from_csv(f'{ticker}_data.csv', date_column='Date')
-    filtered_data = screener.apply_filters(df)
-    output = screener.generate_screening_output(filtered_data, ticker=ticker)
-    all_results.append(output[output['Signal'] == 'SELL'])
+# 300개 파일 분석
+filenames = ["stock1.xlsx", "stock2.xlsx", ..., "stock300.xlsx"]
+results = batch_analyze_stocks(filenames)
 
-combined = pd.concat(all_results, ignore_index=True)
+# 20일선 하회 종목만 필터링
+breakdown_stocks = results[results['condition_1_trend_breakdown'] == True]
+print(f"20일선 하회 종목: {len(breakdown_stocks)}개")
+
+# 최근 3일 이내 하회 종목
+recent_breakdown = results[
+    (results['condition_1_trend_breakdown'] == True) &
+    (results['days_below_ma20'] <= 3)
+]
+print(f"최근 3일 이내 하회: {len(recent_breakdown)}개")
+
+# SELL 신호만
+sell_signals = results[results['signal'] == 'SELL']
+print(sell_signals[['ticker', 'last_ma20_break_below', 'ma_distance_percent', 'rvol']])
+
+# 결과 저장
+results.to_csv('전체_분석결과.csv', index=False, encoding='utf-8-sig')
 ```
 
-## Parameter Optimization (파라미터 최적화)
-
-그리드 서치 외에도 다양한 최적화 방법을 제공합니다. 각 방법의 장단점을 고려하여 선택하세요.
-
-### 최적화 가능한 파라미터
-
-- `ma_period`: 이동평균선 기간 (10~100)
-- `rvol_period`: 상대 거래량 계산 기간 (10~50)
-- `wick_threshold`: 윅 비율 임계값 (0.3~0.8)
-- `rvol_threshold`: RVOL 임계값 (1.5~4.0)
-
-### 평가 지표
-
-- `sharpe_ratio`: 샤프 비율 (위험 대비 수익률) - **추천**
-- `total_return`: 총 수익률
-- `win_rate`: 승률 (SELL 신호의 정확도)
-- `profit_factor`: Profit Factor (총 이익 / 총 손실)
-
-### 1. Random Search (랜덤 서치)
-
-**장점**: 간단하고 빠름, 그리드 서치보다 효율적
+### 고급 스크리닝
 
 ```python
-from parameter_optimizer import ParameterOptimizer
+from src import ExitSignalScreener, load_data_from_csv
 
-# 옵티마이저 초기화
-optimizer = ParameterOptimizer(df, ticker="AAPL", evaluation_metric='sharpe_ratio')
+# 1. XLSX/CSV 파일 로드
+df = load_data_from_csv('samsung.xlsx', date_column='Date')
 
-# Random Search 실행
-best_params, best_score = optimizer.random_search(
-    n_iterations=50,
-    param_ranges={
-        'ma_period': (15, 60),
-        'rvol_period': (10, 30),
-        'wick_threshold': (0.4, 0.7),
-        'rvol_threshold': (1.5, 3.5)
-    }
-)
+# 2. 스크리너 초기화
+screener = ExitSignalScreener(ma_period=20, rvol_period=20)
 
-print(f"Best Sharpe Ratio: {best_score:.4f}")
-print(f"Optimal Parameters: {best_params}")
+# 3. 분석 실행
+filtered_data = screener.apply_filters(df)
+
+# 4. 20일선 하회 확인
+latest = filtered_data.iloc[-1]
+print(f"20일선 하회일: {latest['Last_MA20_Break_Below']}")
+print(f"경과일: {latest['Days_Below_MA20']}일")
+print(f"RVOL: {latest['RVOL']:.2f}배")
+
+# 5. SELL 신호만 추출
+output = screener.generate_screening_output(filtered_data, ticker="SAMSUNG")
+sell_signals = output[output['Signal'] == 'SELL']
+print(sell_signals)
 ```
 
-### 2. Bayesian Optimization (베이지안 최적화)
+## 활용 사례
 
-**장점**: 이전 결과를 학습하여 효율적 탐색, 적은 시도로 좋은 결과
-
-```python
-# Bayesian Optimization 실행
-best_params, best_score = optimizer.bayesian_optimization(
-    n_iterations=40,
-    n_initial_points=10
-)
-```
-
-### 3. Genetic Algorithm (유전 알고리즘)
-
-**장점**: 전역 최적화에 강함, local minima 회피
-
-```python
-# Genetic Algorithm 실행
-best_params, best_score = optimizer.genetic_algorithm(
-    population_size=20,
-    n_generations=15,
-    mutation_rate=0.2
-)
-```
-
-### 4. Walk-Forward Optimization (워크포워드 최적화)
-
-**장점**: 과최적화 방지, 실전에 가장 가까운 방법 - **강력 추천**
-
-```python
-# Walk-Forward Optimization 실행
-results = optimizer.walk_forward_optimization(
-    train_window=252,      # 1년 학습
-    test_window=63,        # 3개월 테스트
-    optimization_method='random_search',  # 'random_search', 'bayesian', 'genetic'
-    n_iterations=30
-)
-
-# 각 윈도우별 결과 확인
-for r in results:
-    print(f"Window {r['window']}: Train={r['train_score']:.4f}, Test={r['test_score']:.4f}")
-```
-
-### 최적화 히스토리 저장
-
-```python
-# 모든 시도 기록을 CSV로 저장
-optimizer.export_optimization_history('optimization_history.csv')
-```
-
-### 실행 예시
+### 매일 아침 300개 펀드 종목 모니터링 (Bloomberg)
 
 ```bash
-# 다양한 최적화 예시 실행
-python optimization_examples.py
+# 1. Bloomberg Terminal 실행 및 로그인
+
+# 2. 종목 리스트 준비
+#    → 엑셀에 한글 종목명 300개 작성
+#    → 또는 ticker_list.xlsx 파일로 저장
+
+# 3. start.py 실행
+python start.py
+
+# 4. 워크플로우
+1 입력  → Bloomberg Terminal 선택
+3 입력  → 파일에서 읽기
+ticker_list.xlsx 입력  → 파일 경로 입력
+
+# 자동으로:
+# - 한글 종목명 → Bloomberg 티커 변환
+# - Bloomberg에서 데이터 다운로드
+# - 20일선/RVOL 분석
+# - 요약 테이블 출력
+
+# 5. 결과 확인
+# → SELL 신호 종목 확인
+# → 주의 필요 종목 확인
+# → CSV 저장 후 엑셀에서 정렬
 ```
 
-[optimization_examples.py](optimization_examples.py)에서 8가지 최적화 예시를 확인할 수 있습니다:
-1. Random Search 기본 사용
-2. Bayesian Optimization
-3. Genetic Algorithm
-4. Walk-Forward Optimization
-5. 여러 방법 비교
-6. 다양한 평가 지표 사용
-7. 최적화 히스토리 분석
-8. 특정 파라미터만 튜닝
+### 개별 종목 모니터링 (로컬 파일)
 
-### 방법 선택 가이드
+```bash
+python start.py
+2 입력  → 로컬 파일 선택
+samsung.xlsx 입력  → 파일명 입력
 
-| 상황 | 추천 방법 | 이유 |
-|------|-----------|------|
-| 빠른 프로토타이핑 | Random Search | 간단하고 빠름 |
-| 적은 시도로 최적화 | Bayesian Optimization | 효율적인 탐색 |
-| 복잡한 탐색 공간 | Genetic Algorithm | 전역 최적화 |
-| 실전 트레이딩 준비 | Walk-Forward | 과최적화 방지 |
-| 확신이 없을 때 | Walk-Forward + Random Search | 안정적이고 빠름 |
-
-## Technical Details
-
-### Upper Wick Calculation
-
-```
-Upper Wick = High - max(Open, Close)
-Total Candle Length = High - Low
-Wick Ratio = Upper Wick / Total Candle Length
+# → 상세 리포트 출력
+# → 20일선 하회일, 경과일, RVOL 등 확인
 ```
 
-### RVOL Calculation
+### 모니터링 우선순위
 
-```
-RVOL = Current Volume / Average Volume (20 periods)
-```
+**Level 1: 강력 매도 신호** (즉시 주의)
+- 2가지 조건 모두 충족
+- 신호 = SELL
 
-## Notes
+**Level 2: 주의 필요**
+- 20일선 하회, 거래량 부족
+- 거래량 늘어나면 SELL로 전환
 
-- 도지 캔들 (High = Low)의 경우 Wick Ratio는 0으로 처리됩니다
-- 초기 N일은 MA 및 RVOL 계산을 위해 NaN 값을 가질 수 있습니다
-- 모든 조건은 AND 연산으로 결합됩니다 (엄격한 필터링)
+**Level 3: 관찰**
+- 20일선 하회만
+- 하회일과 경과일 확인
+- RVOL 추이 관찰
 
-## License
+## 더 알아보기
+
+- **상세 설명**: [docs/README.md](docs/README.md)
+- **사용법 가이드**: [docs/USAGE_GUIDE.md](docs/USAGE_GUIDE.md)
+- **예시 코드**: [examples/](examples/) 폴더 참고
+
+## 요구사항
+
+- Python 3.7+
+- pandas >= 2.0.0
+- numpy >= 1.24.0
+- openpyxl >= 3.0.0 (XLSX 지원)
+
+## 라이선스
 
 MIT License
 
-## Contact
+## 문의
 
 IGIS Asset Management
