@@ -411,6 +411,42 @@ tickers = convert_names_to_tickers(names)
 
 ## 개발 히스토리
 
+### 2026-01-08 (RVOL 기간 변경 및 시각화 개선)
+- ✅ RVOL 계산 기간 변경: 20일 → 10일
+- ✅ `src/screener.py` - rvol_period 기본값 변경 (20 → 10)
+- ✅ `src/analyzer.py` - rvol_period 기본값 변경 (20 → 10)
+- ✅ 시각화에서 종목별 괴리율 히트맵 제거
+- ✅ 차트 레이아웃 최적화 (3x2 → 2x2)
+
+### 2026-01-08 (시각화 기능 추가)
+- ✅ 히트맵 시각화 모듈 추가 (`src/visualizer.py`)
+- ✅ 추세별/조건별 분류를 차트로 시각화
+  - 추세 방향 파이 차트
+  - 조건별 분류 막대 그래프
+  - RVOL 분포 히스토그램
+  - 신호별 분류 막대 그래프
+- ✅ database 폴더에 자동 저장 (날짜_시간_heatmap.png)
+- ✅ requirements.txt에 matplotlib, seaborn 추가
+- ✅ 상세 리포트 프롬프트 제거, 시각화 저장 프롬프트로 대체
+
+### 2026-01-08 (추세 방향 분류 기능 추가)
+- ✅ 하락세/상승세 자동 판단 로직 추가
+- ✅ `src/analyzer.py` - 추세 방향 필드 추가 (trend_direction, trend_detail, current_position)
+- ✅ 하락세 종목: "10일선 위(날짜) → 10일선 아래(날짜)" 경로 표시
+- ✅ 상승세 종목: "10일선 아래(날짜) → 10일선 위(날짜)" 경로 표시
+- ✅ start.py, start_bloomberg.py - 추세별 분류 섹션 추가
+- ✅ 요약 테이블에 '추세' 컬럼 추가
+- ✅ 리포트에 추세 경로 정보 표시
+
+### 2026-01-08 (이동평균선 기간 변경: 20일 → 10일)
+- ✅ 모든 이동평균선 기간을 20일에서 10일로 변경
+- ✅ `src/screener.py` - ExitSignalScreener 기본값 수정 (ma_period=10)
+- ✅ `src/analyzer.py` - StockAnalyzer 기본값 수정 (ma_period=10)
+- ✅ 모든 변수명 업데이트 (MA20 → MA10, ma20 → ma10, 20일선 → 10일선)
+- ✅ 컬럼명 업데이트 (Last_MA20_Break → Last_MA10_Break, Days_Below_MA20 → Days_Below_MA10)
+- ✅ start.py, start_bloomberg.py 출력 메시지 업데이트
+- ✅ 전략 설명 업데이트 (Price < 20MA → Price < 10MA)
+
 ### 2026-01-07 (하회일 날짜 포맷 수정)
 - ✅ 날짜 표시 오류 수정: 숫자(233.0, 235.0) → 표준 날짜 형식(2024-10-18)
 - ✅ `src/screener.py`의 `_track_ma_crossover` 함수 개선
@@ -434,7 +470,7 @@ tickers = convert_names_to_tickers(names)
 ### 2026-01-07 (전략 단순화)
 - ✅ 윗꼬리/아래꼬리 분석 완전 제거
 - ✅ 3개 조건 → 2개 조건으로 전략 단순화
-- ✅ 20일선 가격 명시적 표시
+- ✅ 이동평균선 가격 명시적 표시
 - ✅ 어제 종가 및 전일대비 변화 추가
 - ✅ MA 계산 방식 검증 (표준 SMA 공식과 100% 일치 확인)
 - ✅ Python 환경 문제 해결 (32비트 → 64비트)

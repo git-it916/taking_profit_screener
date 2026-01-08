@@ -1,10 +1,11 @@
 """
 Taking Profit Screener - Bloomberg 버전
 
+py -3.12 start_bloomberg.py
+
 Bloomberg Terminal에서 직접 데이터를 받아 분석합니다.
 로컬에 파일 저장 없이 실시간으로 분석 가능!
 """
-
 import os
 import sys
 import pandas as pd
@@ -24,6 +25,7 @@ if current_dir not in sys.path:
 
 from src import StockAnalyzer
 from src.bloomberg import download_bloomberg_data
+from src.visualizer import create_trend_heatmap
 
 
 def analyze_from_bloomberg(ticker: str, period: str = '1Y') -> dict:
@@ -153,20 +155,13 @@ def main():
             else:
                 price_change_str = "-"
 
-            # 하회일 포맷팅
-            break_below = row.get('last_ma20_break_below')
-            if pd.notna(break_below):
-                break_below_str = str(break_below).split()[0]
-            else:
-                break_below_str = "없음"
-
             summary_data.append({
                 '종목': row['ticker'],
                 '현재가': f"{row['close_price']:.0f}",
                 '전일비': price_change_str,
-                '20일선': f"{row['ma20']:.0f}",
+                '10일선': f"{row['ma10']:.0f}",
                 '괴리율': f"{row['ma_distance_percent']:+.1f}%",
-                '하회일': break_below_str,
+                '추세': row.get('trend_direction', '-'),
                 'RVOL': f"{row['rvol']:.1f}배",
                 '신호': row['signal']
             })
@@ -176,61 +171,101 @@ def main():
         print("\n" + tabulate(summary_df, headers='keys', tablefmt='simple', showindex=False))
 
         # ================================================================
-        # 조건별 분류
+        # 추세별 분류 (하락세 vs 상승세)
         # ================================================================
         results_df = pd.DataFrame(results)
 
         print("\n" + "="*80)
+        print("추세별 분류")
+        print("="*80)
+
+        # ====================================================================
+        # 하락세 종목 (10일선 아래)
+        # ====================================================================
+        falling_stocks = results_df[results_df['current_position'] == 'below']
+        print(f"\n[하락세 종목] {len(falling_stocks)}개 (10일선 아래)")
+        print("-" * 80)
+        if len(falling_stocks) > 0:
+            for _, stock in falling_stocks.iterrows():
+                trend_info = stock['trend_detail']
+                rvol_info = f"RVOL {stock['rvol']:.1f}배"
+                if stock['condition_2_volume_confirmation']:
+                    rvol_info += " [거래량 폭증!]"
+                print(f"  - {stock['ticker']}: {trend_info}, {rvol_info}")
+        else:
+            print("  없음")
+
+        # ====================================================================
+        # 상승세 종목 (10일선 위)
+        # ====================================================================
+        rising_stocks = results_df[results_df['current_position'] == 'above']
+        print(f"\n[상승세 종목] {len(rising_stocks)}개 (10일선 위)")
+        print("-" * 80)
+        if len(rising_stocks) > 0:
+            for _, stock in rising_stocks.iterrows():
+                trend_info = stock['trend_detail']
+                rvol_info = f"RVOL {stock['rvol']:.1f}배"
+                if stock['condition_2_volume_confirmation']:
+                    rvol_info += " [거래량 폭증!]"
+                print(f"  - {stock['ticker']}: {trend_info}, {rvol_info}")
+        else:
+            print("  없음")
+
+        # ====================================================================
+        # 조건별 분류
+        # ====================================================================
+        print("\n" + "="*80)
         print("조건별 분류")
         print("="*80)
 
-        # SELL 신호
+        # SELL 신호 (10일선 하회 + 거래량 폭증)
         sell_stocks = results_df[results_df['signal'] == 'SELL']
-        print(f"\n[강력 매도 신호] {len(sell_stocks)}개 종목:")
+        print(f"\n[강력 매도 신호] {len(sell_stocks)}개 종목 (10일선 하회 + 거래량 폭증):")
         if len(sell_stocks) > 0:
             for _, stock in sell_stocks.iterrows():
                 print(f"  - {stock['ticker']}: {stock['reasoning']}")
         else:
             print("  없음")
 
-        # 20일선 하회 + 거래량 부족
+        # 10일선 하회 + 거래량 부족
         caution = results_df[
             results_df['condition_1_trend_breakdown'] &
             ~results_df['condition_2_volume_confirmation']
         ]
-        print(f"\n[주의 필요] {len(caution)}개 종목 (20일선 하회, 거래량 부족):")
+        print(f"\n[주의 필요] {len(caution)}개 종목 (10일선 하회, 거래량 부족):")
         if len(caution) > 0:
             for _, stock in caution.iterrows():
-                break_below = stock.get('last_ma20_break_below')
-                break_below_str = str(break_below).split()[0] if pd.notna(break_below) else "데이터 없음"
-                print(f"  - {stock['ticker']}: 20일선 대비 {stock['ma_distance_percent']:.2f}%, 하회일: {break_below_str}, RVOL {stock['rvol']:.2f}배")
+                print(f"  - {stock['ticker']}: {stock['trend_detail']}, RVOL {stock['rvol']:.1f}배")
         else:
             print("  없음")
 
-        # 거래량 폭증만
+        # 거래량 폭증만 (10일선 위)
         rvol_surge = results_df[
             ~results_df['condition_1_trend_breakdown'] &
             results_df['condition_2_volume_confirmation']
         ]
-        print(f"\n[거래량 폭증만] {len(rvol_surge)}개 종목 (20일선 위):")
+        print(f"\n[거래량 폭증] {len(rvol_surge)}개 종목 (10일선 위 + 거래량 폭증):")
         if len(rvol_surge) > 0:
             for _, stock in rvol_surge.iterrows():
-                print(f"  - {stock['ticker']}: RVOL {stock['rvol']:.2f}배 ({stock['rvol_strength']})")
+                print(f"  - {stock['ticker']}: {stock['trend_detail']}, RVOL {stock['rvol']:.1f}배")
         else:
             print("  없음")
 
         # ================================================================
-        # 상세 리포트 출력 (선택)
+        # 시각화 저장 (선택)
         # ================================================================
         print("\n" + "="*80)
-        detail_choice = input("\n종목별 상세 리포트를 보시겠습니까? (y/n): ").strip().lower()
+        viz_choice = input("\n분석 결과를 히트맵으로 저장하시겠습니까? (y/n): ").strip().lower()
 
-        if detail_choice == 'y':
-            analyzer = StockAnalyzer()
-            for result in results:
-                print("\n" + "="*80)
-                report = analyzer.format_analysis_report(result)
-                print(report)
+        if viz_choice == 'y':
+            try:
+                print("\n[시각화 생성 중...]")
+                saved_path = create_trend_heatmap(results)
+                print(f"✓ 히트맵 저장 완료: {saved_path}")
+            except Exception as e:
+                print(f"✗ 시각화 생성 실패: {e}")
+                import traceback
+                traceback.print_exc()
 
         # ================================================================
         # CSV 저장 (선택)

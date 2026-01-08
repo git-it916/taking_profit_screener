@@ -1,7 +1,7 @@
 """
 종목별 상세 분석 모듈
 
-RVOL, 20일선 근접도, 신호 강도 등을 분석합니다.
+RVOL, 10일선 근접도, 신호 강도 등을 분석합니다.
 """
 
 import pandas as pd
@@ -13,14 +13,14 @@ from .screener import ExitSignalScreener
 class StockAnalyzer:
     """종목 상세 분석 클래스"""
 
-    def __init__(self, ma_period: int = 20, rvol_period: int = 20):
+    def __init__(self, ma_period: int = 10, rvol_period: int = 10):
         """
         Parameters:
         -----------
         ma_period : int
-            이동평균선 기간 (default: 20)
+            이동평균선 기간 (default: 10)
         rvol_period : int
-            RVOL 계산 기간 (default: 20)
+            RVOL 계산 기간 (default: 10)
         """
         self.ma_period = ma_period
         self.rvol_period = rvol_period
@@ -57,9 +57,9 @@ class StockAnalyzer:
             price_change = 0
             price_change_percent = 0
 
-        # 20일선 근접도 계산
-        ma_distance_percent = ((latest['Close'] - latest['MA20']) / latest['MA20']) * 100
-        ma_distance_points = latest['Close'] - latest['MA20']
+        # 10일선 근접도 계산
+        ma_distance_percent = ((latest['Close'] - latest['MA10']) / latest['MA10']) * 100
+        ma_distance_points = latest['Close'] - latest['MA10']
 
         # RVOL 강도 분류
         rvol_strength = self._classify_rvol(latest['RVOL'])
@@ -73,7 +73,7 @@ class StockAnalyzer:
             rvol_direction = "정보 부족"
             rvol_change = 0
 
-        # 20일선 돌파/이탈 상태
+        # 10일선 돌파/이탈 상태
         ma_status = self._classify_ma_status(ma_distance_percent)
 
         # 조건 충족 여부 체크
@@ -83,10 +83,28 @@ class StockAnalyzer:
         # 신호 분류
         signal_category = self._classify_signal(condition_1, condition_2)
 
-        # 20일선 하회/상회 날짜 정보
-        last_break_below = latest.get('Last_MA20_Break_Below', None)
-        last_break_above = latest.get('Last_MA20_Break_Above', None)
-        days_below_ma20 = latest.get('Days_Below_MA20', 0)
+        # 10일선 하회/상회 날짜 정보
+        last_break_below = latest.get('Last_MA10_Break_Below', None)
+        last_break_above = latest.get('Last_MA10_Break_Above', None)
+        days_below_ma10 = latest.get('Days_Below_MA10', 0)
+
+        # ====================================================================
+        # 추세 방향 판단 (하락세 vs 상승세)
+        # ====================================================================
+        current_position = 'below' if latest['Close'] < latest['MA10'] else 'above'
+
+        if current_position == 'below':
+            # 10일선 아래 = 하락세
+            trend_direction = '하락세'
+            # 하락세 종목: 언제 10일선 위→아래로 떨어졌는지 (break_below)
+            # 그 전에 언제 10일선을 상회했는지 (break_above)
+            trend_detail = f"10일선 위({last_break_above if last_break_above else '?'}) → 10일선 아래({last_break_below if last_break_below else '?'})"
+        else:
+            # 10일선 위 = 상승세
+            trend_direction = '상승세'
+            # 상승세 종목: 언제 10일선 아래→위로 올라왔는지 (break_above)
+            # 그 전에 언제 10일선을 하회했는지 (break_below)
+            trend_detail = f"10일선 아래({last_break_below if last_break_below else '?'}) → 10일선 위({last_break_above if last_break_above else '?'})"
 
         # 결과 정리
         result = {
@@ -97,17 +115,22 @@ class StockAnalyzer:
             'price_change': price_change,
             'price_change_percent': price_change_percent,
 
-            # 20일선 분석
-            'ma20': latest['MA20'],
+            # 10일선 분석
+            'ma10': latest['MA10'],
             'ma_distance_percent': ma_distance_percent,
             'ma_distance_points': ma_distance_points,
             'ma_status': ma_status,
             'condition_1_trend_breakdown': condition_1,
 
-            # 20일선 하회/상회 날짜 추적
-            'last_ma20_break_below': last_break_below,
-            'last_ma20_break_above': last_break_above,
-            'days_below_ma20': days_below_ma20,
+            # 10일선 하회/상회 날짜 추적
+            'last_ma10_break_below': last_break_below,
+            'last_ma10_break_above': last_break_above,
+            'days_below_ma10': days_below_ma10,
+
+            # 추세 방향 (NEW)
+            'trend_direction': trend_direction,
+            'trend_detail': trend_detail,
+            'current_position': current_position,
 
             # RVOL 분석
             'rvol': latest['RVOL'],
@@ -140,28 +163,28 @@ class StockAnalyzer:
             return "매우 약함 (1.5배 미만)"
 
     def _classify_ma_status(self, distance_percent: float) -> str:
-        """20일선 근접도 분류"""
+        """10일선 근접도 분류"""
         if pd.isna(distance_percent):
             return "정보 없음"
         elif distance_percent > 5:
-            return "20일선 위 (멀리)"
+            return "10일선 위 (멀리)"
         elif distance_percent > 1:
-            return "20일선 위 (근접)"
+            return "10일선 위 (근접)"
         elif distance_percent > -1:
-            return "20일선 근처"
+            return "10일선 근처"
         elif distance_percent > -5:
-            return "20일선 아래 (근접)"
+            return "10일선 아래 (근접)"
         else:
-            return "20일선 아래 (멀리)"
+            return "10일선 아래 (멀리)"
 
     def _classify_signal(self, cond1: bool, cond2: bool) -> str:
         """신호 분류"""
         if cond1 and cond2:
-            return "강력 매도 (20일선 하회 + 거래량 폭증)"
+            return "강력 매도 (10일선 하회 + 거래량 폭증)"
         elif cond1:
             return "추세 하락만 (거래량 부족)"
         elif cond2:
-            return "거래량 폭증만 (20일선 위)"
+            return "거래량 폭증만 (10일선 위)"
         else:
             return "정상 (신호 없음)"
 
@@ -179,28 +202,28 @@ class StockAnalyzer:
             report.append(f"어제 종가: {result['prev_close']:.2f} (전일대비 {result['price_change']:+.2f}원, {result['price_change_percent']:+.2f}%)")
 
         report.append("\n" + "-" * 80)
-        report.append("[1] 20일 이동평균선 분석")
+        report.append("[1] 10일 이동평균선 분석")
         report.append("-" * 80)
-        report.append(f"  - 20일선 가격: {result['ma20']:.2f}")
+        report.append(f"  - 10일선 가격: {result['ma10']:.2f}")
         report.append(f"  - 현재가 대비: {result['ma_distance_points']:+.2f}원 ({result['ma_distance_percent']:+.2f}%)")
         report.append(f"  - 상태: {result['ma_status']}")
 
-        # 20일선 하회/상회 날짜 정보 추가 (NEW)
-        if result.get('last_ma20_break_below'):
-            report.append(f"  - 최근 20일선 하회일: {result['last_ma20_break_below']}")
+        # ====================================================================
+        # 추세 방향에 따라 다른 정보 표시 (NEW)
+        # ====================================================================
+        report.append(f"\n  *** 추세 방향: {result['trend_direction']} ***")
+
+        if result['current_position'] == 'below':
+            # 하락세 종목: 10일선 아래
+            report.append(f"  - 추세 경로: {result['trend_detail']}")
+            days_below = result.get('days_below_ma10', 0)
+            if days_below > 0:
+                report.append(f"  - 10일선 아래 경과일: {days_below}일")
+            report.append(f"  - 조건 1 충족: [O] 10일선 하회 (하락 추세 확인)")
         else:
-            report.append(f"  - 최근 20일선 하회일: 없음 (계속 20일선 위)")
-
-        if result.get('last_ma20_break_above'):
-            report.append(f"  - 최근 20일선 상회일: {result['last_ma20_break_above']}")
-        else:
-            report.append(f"  - 최근 20일선 상회일: 없음")
-
-        days_below = result.get('days_below_ma20', 0)
-        if days_below > 0:
-            report.append(f"  - 20일선 아래 경과일: {days_below}일")
-
-        report.append(f"  - 조건 1 충족 여부: {'[O] 충족 (추세 하락)' if result['condition_1_trend_breakdown'] else '[X] 미충족 (추세 양호)'}")
+            # 상승세 종목: 10일선 위
+            report.append(f"  - 추세 경로: {result['trend_detail']}")
+            report.append(f"  - 조건 1 충족: [X] 10일선 위 (상승 추세)")
 
         report.append("\n" + "-" * 80)
         report.append("[2] RVOL (상대 거래량) 분석")

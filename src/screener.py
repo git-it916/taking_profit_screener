@@ -80,19 +80,19 @@ class ExitSignalScreener:
     기술적 지표 기반 익절 신호 스크리너
 
     Strategy: Volume-Confirmed Rejection
-    - Condition 1: Trend Breakdown (Price < 20MA)
+    - Condition 1: Trend Breakdown (Price < 10MA)
     - Condition 2: Rejection Pattern (Upper Wick >= 50% of Total Candle)
     - Condition 3: Volume Confirmation (RVOL >= 2.0)
     """
 
-    def __init__(self, ma_period: int = 20, rvol_period: int = 20):
+    def __init__(self, ma_period: int = 10, rvol_period: int = 10):
         """
         Parameters:
         -----------
         ma_period : int
-            이동평균선 기간 (default: 20)
+            이동평균선 기간 (default: 10)
         rvol_period : int
-            상대 거래량 계산 기간 (default: 20)
+            상대 거래량 계산 기간 (default: 10)
         """
         self.ma_period = ma_period
         self.rvol_period = rvol_period
@@ -116,10 +116,10 @@ class ExitSignalScreener:
         ====================================================================
         계산 예시:
         ====================================================================
-        날짜 1~19: MA20 = NaN (데이터 부족)
-        날짜 20: MA20 = (1일~20일 종가 합계) / 20
-        날짜 21: MA20 = (2일~21일 종가 합계) / 20  ← "이동": 1일 제외, 21일 추가
-        날짜 22: MA20 = (3일~22일 종가 합계) / 20  ← "이동": 2일 제외, 22일 추가
+        날짜 1~19: MA10 = NaN (데이터 부족)
+        날짜 20: MA10 = (1일~20일 종가 합계) / 20
+        날짜 21: MA10 = (2일~21일 종가 합계) / 20  ← "이동": 1일 제외, 21일 추가
+        날짜 22: MA10 = (3일~22일 종가 합계) / 20  ← "이동": 2일 제외, 22일 추가
 
         매일 가장 오래된 데이터는 제외되고 새 데이터가 추가되므로 "이동평균"
 
@@ -218,17 +218,17 @@ class ExitSignalScreener:
 
     def _track_ma_crossover(self, df: pd.DataFrame) -> pd.Series:
         """
-        20일선 하회/상회 날짜 추적
+        10일선 하회/상회 날짜 추적
 
         각 시점에서:
-        - 가장 최근에 20일선을 하회한 날짜
-        - 가장 최근에 20일선을 상회한 날짜
-        - 20일선 아래에 머문 일수
+        - 가장 최근에 10일선을 하회한 날짜
+        - 가장 최근에 10일선을 상회한 날짜
+        - 10일선 아래에 머문 일수
 
         Parameters:
         -----------
         df : pd.DataFrame
-            MA20가 계산된 데이터프레임
+            MA10가 계산된 데이터프레임
 
         Returns:
         --------
@@ -239,9 +239,9 @@ class ExitSignalScreener:
         # ====================================================================
         # 추적 변수 초기화
         # ====================================================================
-        last_break_below = None  # 마지막으로 20일선을 하회한 날짜 (위 → 아래로 내려간 날)
-        last_break_above = None  # 마지막으로 20일선을 상회한 날짜 (아래 → 위로 올라간 날)
-        days_below = 0           # 20일선 아래에 머문 일수 (연속으로 아래에 있었던 일수)
+        last_break_below = None  # 마지막으로 10일선을 하회한 날짜 (위 → 아래로 내려간 날)
+        last_break_above = None  # 마지막으로 10일선을 상회한 날짜 (아래 → 위로 올라간 날)
+        days_below = 0           # 10일선 아래에 머문 일수 (연속으로 아래에 있었던 일수)
         prev_position = None     # 이전 시점의 위치 ('above' 또는 'below')
 
         # ====================================================================
@@ -254,11 +254,11 @@ class ExitSignalScreener:
                 current_date = current_date.strftime('%Y-%m-%d')
 
             # ================================================================
-            # [1단계] MA20 또는 Close가 없는 경우 처리
+            # [1단계] MA10 또는 Close가 없는 경우 처리
             # ================================================================
-            # MA20은 20일치 데이터가 있어야 계산되므로, 초기 19일은 NaN입니다.
+            # MA10은 10일치 데이터가 있어야 계산되므로, 초기 9일은 NaN입니다.
             # 이 경우 추적 불가능하므로 None 반환
-            if pd.isna(row['MA20']) or pd.isna(row['Close']):
+            if pd.isna(row['MA10']) or pd.isna(row['Close']):
                 result.append({
                     'last_break_below': None,
                     'last_break_above': None,
@@ -269,26 +269,26 @@ class ExitSignalScreener:
             # ================================================================
             # [2단계] 현재 위치 판단
             # ================================================================
-            # 종가와 20일선을 비교하여 현재 위치 결정:
-            # - Close < MA20 → 'below' (20일선 아래)
-            # - Close >= MA20 → 'above' (20일선 위 또는 동일)
-            current_position = 'below' if row['Close'] < row['MA20'] else 'above'
+            # 종가와 10일선을 비교하여 현재 위치 결정:
+            # - Close < MA10 → 'below' (10일선 아래)
+            # - Close >= MA10 → 'above' (10일선 위 또는 동일)
+            current_position = 'below' if row['Close'] < row['MA10'] else 'above'
 
             # DEBUG: 현재 위치 확인용 (필요시 주석 해제)
-            # print(f"{idx}: Close={row['Close']:.2f}, MA20={row['MA20']:.2f}, Position={current_position}")
+            # print(f"{idx}: Close={row['Close']:.2f}, MA10={row['MA10']:.2f}, Position={current_position}")
 
             # ================================================================
             # [3단계] 첫 번째 유효한 데이터 처리
             # ================================================================
             # prev_position이 None이면 이것이 첫 번째 유효 데이터입니다.
             if prev_position is None:
-                # 데이터 시작부터 이미 20일선 아래에 있으면
+                # 데이터 시작부터 이미 10일선 아래에 있으면
                 # 시작 날짜를 하회일로 기록합니다.
                 if current_position == 'below':
                     last_break_below = current_date  # 첫 날짜를 하회일로 설정
                     days_below = 1
                     # DEBUG: 첫 데이터가 하회 상태
-                    # print(f"  → 첫 데이터: 20일선 아래 시작, 하회일={current_date}")
+                    # print(f"  → 첫 데이터: 10일선 아래 시작, 하회일={current_date}")
 
                 prev_position = current_position  # 다음 루프를 위해 현재 위치 저장
                 result.append({
@@ -301,46 +301,46 @@ class ExitSignalScreener:
             # ================================================================
             # [4단계] 하회 감지 (위 → 아래)
             # ================================================================
-            # 이전: 20일선 위(above), 현재: 20일선 아래(below)
-            # → 이 시점에 20일선을 "하회"한 것!
+            # 이전: 10일선 위(above), 현재: 10일선 아래(below)
+            # → 이 시점에 10일선을 "하회"한 것!
             if prev_position == 'above' and current_position == 'below':
                 last_break_below = current_date  # 현재 날짜를 "하회일"로 기록
                 days_below = 1          # 하회 경과일 1일로 초기화
                 # DEBUG: 하회 감지
-                # print(f"  → 하회 감지! {current_date}에 20일선 아래로 내려감")
-                # print(f"     Close={row['Close']:.2f} < MA20={row['MA20']:.2f}")
+                # print(f"  → 하회 감지! {current_date}에 10일선 아래로 내려감")
+                # print(f"     Close={row['Close']:.2f} < MA10={row['MA10']:.2f}")
 
             # ================================================================
             # [5단계] 상회 감지 (아래 → 위)
             # ================================================================
-            # 이전: 20일선 아래(below), 현재: 20일선 위(above)
-            # → 이 시점에 20일선을 "상회"한 것!
+            # 이전: 10일선 아래(below), 현재: 10일선 위(above)
+            # → 이 시점에 10일선을 "상회"한 것!
             elif prev_position == 'below' and current_position == 'above':
                 last_break_above = current_date  # 현재 날짜를 "상회일"로 기록
                 days_below = 0          # 하회 경과일 0으로 리셋 (더 이상 아래에 없음)
                 # DEBUG: 상회 감지
-                # print(f"  → 상회 감지! {current_date}에 20일선 위로 올라감")
-                # print(f"     Close={row['Close']:.2f} >= MA20={row['MA20']:.2f}")
+                # print(f"  → 상회 감지! {current_date}에 10일선 위로 올라감")
+                # print(f"     Close={row['Close']:.2f} >= MA10={row['MA10']:.2f}")
 
             # ================================================================
-            # [6단계] 20일선 아래에 계속 머무는 경우
+            # [6단계] 10일선 아래에 계속 머무는 경우
             # ================================================================
             # 이전: 아래(below), 현재: 아래(below)
             # → 계속 아래에 머물고 있으므로 경과일만 1일 증가
             elif current_position == 'below' and prev_position == 'below':
                 days_below += 1  # 하회 경과일 1일 증가
                 # DEBUG: 계속 아래에 있음
-                # print(f"  → 계속 아래: {days_below}일째 (Close={row['Close']:.2f}, MA20={row['MA20']:.2f})")
+                # print(f"  → 계속 아래: {days_below}일째 (Close={row['Close']:.2f}, MA10={row['MA10']:.2f})")
 
             # ================================================================
-            # [7단계] 20일선 위에 계속 머무는 경우
+            # [7단계] 10일선 위에 계속 머무는 경우
             # ================================================================
             # 이전: 위(above), 현재: 위(above)
             # → 계속 위에 있으므로 경과일은 0 유지
             elif current_position == 'above':
                 days_below = 0  # 위에 있으면 경과일은 항상 0
                 # DEBUG: 계속 위에 있음
-                # print(f"  → 계속 위: 경과일 0 (Close={row['Close']:.2f}, MA20={row['MA20']:.2f})")
+                # print(f"  → 계속 위: 경과일 0 (Close={row['Close']:.2f}, MA10={row['MA10']:.2f})")
 
             # ================================================================
             # [8단계] 현재 날짜의 결과 저장
@@ -383,20 +383,20 @@ class ExitSignalScreener:
         # 데이터 복사
         result_df = df.copy()
 
-        # 1. 20일 이동평균선 계산
-        result_df['MA20'] = self.calculate_sma(result_df)
+        # 1. 10일 이동평균선 계산
+        result_df['MA10'] = self.calculate_sma(result_df)
 
         # 2. 상대 거래량 계산
         result_df['RVOL'] = self.calculate_rvol(result_df)
 
-        # 3. 20일선 하회/상회 날짜 추적
-        result_df['MA20_Cross'] = self._track_ma_crossover(result_df)
-        result_df['Last_MA20_Break_Below'] = result_df['MA20_Cross'].apply(lambda x: x['last_break_below'] if isinstance(x, dict) else None)
-        result_df['Last_MA20_Break_Above'] = result_df['MA20_Cross'].apply(lambda x: x['last_break_above'] if isinstance(x, dict) else None)
-        result_df['Days_Below_MA20'] = result_df['MA20_Cross'].apply(lambda x: x['days_below'] if isinstance(x, dict) else 0)
+        # 3. 10일선 하회/상회 날짜 추적
+        result_df['MA10_Cross'] = self._track_ma_crossover(result_df)
+        result_df['Last_MA10_Break_Below'] = result_df['MA10_Cross'].apply(lambda x: x['last_break_below'] if isinstance(x, dict) else None)
+        result_df['Last_MA10_Break_Above'] = result_df['MA10_Cross'].apply(lambda x: x['last_break_above'] if isinstance(x, dict) else None)
+        result_df['Days_Below_MA10'] = result_df['MA10_Cross'].apply(lambda x: x['days_below'] if isinstance(x, dict) else 0)
 
-        # 4. 조건 체크 (20일선 하회 + RVOL만)
-        result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA20']
+        # 4. 조건 체크 (10일선 하회 + RVOL만)
+        result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA10']
         result_df['Condition_2_Volume_Confirmation'] = result_df['RVOL'] >= 2.0
 
         # 5. 신호 생성 (두 조건 모두 충족시 SELL)
@@ -414,17 +414,17 @@ class ExitSignalScreener:
         # 6. 시그널 설명 추가
         def generate_reasoning(row):
             if row['Signal'] == 'SELL':
-                return "20일선 하회 + 거래량 폭증 확인"
+                return "10일선 하회 + 거래량 폭증 확인"
             else:
                 # HOLD 이유 세부 분석
                 reasons = []
                 if not row['Condition_1_Trend_Breakdown']:
-                    reasons.append("20일선 위")
+                    reasons.append("10일선 위")
                 if not row['Condition_2_Volume_Confirmation']:
                     reasons.append("거래량 부족")
 
                 if row['Condition_1_Trend_Breakdown'] and not row['Condition_2_Volume_Confirmation']:
-                    return "20일선 하회, 거래량 부족"
+                    return "10일선 하회, 거래량 부족"
 
                 return f"{', '.join(reasons)}"
 
@@ -454,7 +454,7 @@ class ExitSignalScreener:
             'Ticker': ticker,
             'Date': df.index if isinstance(df.index, pd.DatetimeIndex) else df.get('Date', range(len(df))),
             'Current_Price': df['Close'],
-            'MA20': df['MA20'],
+            'MA10': df['MA10'],
             'Wick_Ratio': df['Wick_Ratio'].round(3),
             'RVOL': df['RVOL'].round(2),
             'Signal': df['Signal'],
