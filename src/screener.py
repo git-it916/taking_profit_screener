@@ -248,6 +248,11 @@ class ExitSignalScreener:
         # 데이터프레임의 모든 행을 순회하며 하회/상회 추적
         # ====================================================================
         for idx, row in df.iterrows():
+            # 현재 행의 날짜를 가져옴 (Date 컬럼이 있으면 사용, 없으면 인덱스 사용)
+            current_date = row.get('Date', idx)
+            if pd.notna(current_date) and hasattr(current_date, 'strftime'):
+                current_date = current_date.strftime('%Y-%m-%d')
+
             # ================================================================
             # [1단계] MA20 또는 Close가 없는 경우 처리
             # ================================================================
@@ -280,10 +285,10 @@ class ExitSignalScreener:
                 # 데이터 시작부터 이미 20일선 아래에 있으면
                 # 시작 날짜를 하회일로 기록합니다.
                 if current_position == 'below':
-                    last_break_below = idx  # 첫 날짜를 하회일로 설정
+                    last_break_below = current_date  # 첫 날짜를 하회일로 설정
                     days_below = 1
                     # DEBUG: 첫 데이터가 하회 상태
-                    # print(f"  → 첫 데이터: 20일선 아래 시작, 하회일={idx}")
+                    # print(f"  → 첫 데이터: 20일선 아래 시작, 하회일={current_date}")
 
                 prev_position = current_position  # 다음 루프를 위해 현재 위치 저장
                 result.append({
@@ -299,10 +304,10 @@ class ExitSignalScreener:
             # 이전: 20일선 위(above), 현재: 20일선 아래(below)
             # → 이 시점에 20일선을 "하회"한 것!
             if prev_position == 'above' and current_position == 'below':
-                last_break_below = idx  # 현재 날짜를 "하회일"로 기록
+                last_break_below = current_date  # 현재 날짜를 "하회일"로 기록
                 days_below = 1          # 하회 경과일 1일로 초기화
                 # DEBUG: 하회 감지
-                # print(f"  → 하회 감지! {idx}에 20일선 아래로 내려감")
+                # print(f"  → 하회 감지! {current_date}에 20일선 아래로 내려감")
                 # print(f"     Close={row['Close']:.2f} < MA20={row['MA20']:.2f}")
 
             # ================================================================
@@ -311,10 +316,10 @@ class ExitSignalScreener:
             # 이전: 20일선 아래(below), 현재: 20일선 위(above)
             # → 이 시점에 20일선을 "상회"한 것!
             elif prev_position == 'below' and current_position == 'above':
-                last_break_above = idx  # 현재 날짜를 "상회일"로 기록
+                last_break_above = current_date  # 현재 날짜를 "상회일"로 기록
                 days_below = 0          # 하회 경과일 0으로 리셋 (더 이상 아래에 없음)
                 # DEBUG: 상회 감지
-                # print(f"  → 상회 감지! {idx}에 20일선 위로 올라감")
+                # print(f"  → 상회 감지! {current_date}에 20일선 위로 올라감")
                 # print(f"     Close={row['Close']:.2f} >= MA20={row['MA20']:.2f}")
 
             # ================================================================

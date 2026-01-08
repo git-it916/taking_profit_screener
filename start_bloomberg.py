@@ -10,12 +10,19 @@ import sys
 import pandas as pd
 from tabulate import tabulate
 
+# Windows 콘솔 인코딩 설정
+if sys.platform == 'win32':
+    import codecs
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+
 # 현재 스크립트의 디렉토리를 Python 경로에 추가
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from src import StockAnalyzer, ExitSignalScreener
+from src import StockAnalyzer
 from src.bloomberg import download_bloomberg_data
 
 
@@ -46,16 +53,10 @@ def analyze_from_bloomberg(ticker: str, period: str = '1Y') -> dict:
             return None
 
         # ================================================================
-        # [2단계] 스크리너로 분석
+        # [2단계] 상세 분석
         # ================================================================
-        screener = ExitSignalScreener()
-        df_analyzed = screener.apply_filters(df)
-
-        # ================================================================
-        # [3단계] 상세 분석
-        # ================================================================
-        analyzer = StockAnalyzer(screener=screener)
-        result = analyzer.analyze_latest(ticker, df_analyzed)
+        analyzer = StockAnalyzer()
+        result = analyzer.analyze_latest(df, ticker)
 
         print(f"  ✓ 분석 완료")
         return result

@@ -11,6 +11,13 @@ Taking Profit Screener - 통합 분석 도구
 import sys
 from pathlib import Path
 
+# Windows 콘솔 인코딩 설정
+if sys.platform == 'win32':
+    import codecs
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+
 # 프로젝트 루트를 Python path에 추가
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -224,14 +231,9 @@ def analyze_from_bloomberg():
                 print(f"  >> 데이터 없음")
                 continue
 
-            # 스크리너로 분석
-            from src import ExitSignalScreener
-            screener = ExitSignalScreener()
-            df_analyzed = screener.apply_filters(df)
-
             # 상세 분석
-            analyzer = StockAnalyzer(screener=screener)
-            result = analyzer.analyze_latest(ticker, df_analyzed)
+            analyzer = StockAnalyzer()
+            result = analyzer.analyze_latest(df, ticker)
 
             results.append(result)
             print(f"  >> 분석 완료")

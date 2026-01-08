@@ -261,9 +261,177 @@ XLSX/CSV 파일은 다음 컬럼을 포함해야 합니다:
 - 20일선 하회만
 - **모니터링**: 하회일과 경과일 확인, RVOL 추이 관찰
 
+## Bloomberg Terminal 연동 설정
+
+### 환경 요구사항
+- **Python 버전**: Python 3.12.10 (64-bit) **필수**
+  - Python 3.14는 blpapi 미지원
+  - Python 3.8-3.12 지원
+- **Bloomberg Terminal**: 실행 중이고 로그인 상태여야 함
+
+### 패키지 의존성
+```
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.0.0
+tabulate>=0.9.0
+xbbg>=0.10.0
+blpapi==3.25.11.1
+```
+
+### Bloomberg API 설치 과정
+
+#### 1단계: Python 3.12 설치
+```bash
+# Python 3.12.10 다운로드 및 설치
+# https://www.python.org/downloads/
+# "Add Python to PATH" 체크 필수
+```
+
+#### 2단계: 기본 패키지 설치
+```bash
+py -3.12 -m pip install -r requirements.txt
+```
+
+#### 3단계: Bloomberg API (blpapi) 설치
+
+**방법 1: Bloomberg 공식 pip 저장소에서 설치 (권장)**
+```bash
+py -3.12 -m pip download --no-deps --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple blpapi --dest "C:\Users\Bloomberg\Downloads\blpapi_wheels"
+py -3.12 -m pip install "C:\Users\Bloomberg\Downloads\blpapi_wheels\blpapi-3.25.11.1-py3-none-win_amd64.whl"
+```
+
+**방법 2: Bloomberg Terminal에서 다운로드**
+1. Bloomberg Terminal 실행
+2. `WAPI<GO>` 입력
+3. "APIs" 필터 → "Bloomberg API (BLPAPI)" 선택
+4. "Bloomberg API - SDK" 섹션 찾기
+5. **Windows + Python** 행의 다운로드 버튼 클릭
+6. 다운로드한 wheel 파일 설치:
+   ```bash
+   py -3.12 -m pip install [다운로드경로]\blpapi-3.25.11.1-py3-none-win_amd64.whl
+   ```
+
+**주의사항:**
+- **소스 코드 버전**(~340KB)이 아닌 **미리 빌드된 wheel 버전**(~5.6MB)을 다운로드해야 함
+- 소스 버전은 C++ 컴파일러와 C++ SDK가 필요하므로 권장하지 않음
+
+#### 4단계: 설치 확인
+```bash
+py -3.12 -c "import blpapi; print('Bloomberg API installed successfully'); print('Version:', blpapi.__version__)"
+```
+
+예상 출력:
+```
+Bloomberg API installed successfully
+Version: 3.25.11.1
+```
+
+### 코드 수정 사항
+
+#### Windows 콘솔 인코딩 설정
+한글 및 이모지 출력 문제 해결을 위해 `start.py`와 `start_bloomberg.py`에 추가:
+
+```python
+# Windows 콘솔 인코딩 설정
+if sys.platform == 'win32':
+    import codecs
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+```
+
+#### Bloomberg 티커 자동 변환
+`src/bloomberg.py`에 티커 형식 자동 변환 추가:
+
+```python
+# Bloomberg 티커 형식 확인 및 조정
+# "005930 KS" -> "005930 KS Equity"
+if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+    ticker = ticker + ' Equity'
+```
+
+**이유**: Bloomberg API는 `005930 KS`가 아닌 `005930 KS Equity` 형식을 요구
+
+#### 배치 파일 업데이트
+`run.bat`와 `run_bloomberg.bat` 수정:
+
+```bat
+@echo off
+chcp 65001 >nul
+py -3.12 start_bloomberg.py
+pause
+```
+
+**변경사항:**
+- UTF-8 인코딩 설정 (`chcp 65001`)
+- Python 3.12 명시적 지정 (`py -3.12`)
+- 하드코딩된 경로 제거
+
+### Bloomberg 데이터 다운로드 사용법
+
+#### 티커 형식
+```
+한국 주식: 005930 KS, 000660 KS
+미국 주식: AAPL US, MSFT US
+(자동으로 "Equity" 접미사 추가됨)
+```
+
+#### 실행 방법
+```bash
+# 배치 파일 실행
+run_bloomberg.bat
+
+# 또는 직접 실행
+py -3.12 start_bloomberg.py
+```
+
+#### 프로그램 흐름
+1. 티커 입력 (쉼표로 구분)
+2. 데이터 기간 선택 (1년/6개월/3개월)
+3. Bloomberg Terminal에서 데이터 자동 다운로드
+4. 분석 실행
+5. 결과 출력 (요약 테이블 + 상세 리포트)
+
+### 통합 분석 도구 (start.py)
+
+두 가지 데이터 소스를 지원:
+1. **Bloomberg Terminal** - 실시간 데이터 다운로드
+2. **로컬 파일** - XLSX/CSV 파일 분석
+
+#### 한글 종목명 → Bloomberg 티커 자동 변환
+```python
+from src.ticker_converter import convert_names_to_tickers
+
+# 사용 예시
+names = ["삼성전자", "SK하이닉스", "LG에너지솔루션"]
+tickers = convert_names_to_tickers(names)
+# 결과: ['005930 KS', '000660 KS', '373220 KS']
+```
+
 ## 개발 히스토리
 
-### 2026-01-07
+### 2026-01-07 (하회일 날짜 포맷 수정)
+- ✅ 날짜 표시 오류 수정: 숫자(233.0, 235.0) → 표준 날짜 형식(2024-10-18)
+- ✅ `src/screener.py`의 `_track_ma_crossover` 함수 개선
+  - DataFrame 인덱스 대신 Date 컬럼의 실제 날짜 사용
+  - 날짜를 'YYYY-MM-DD' 형식의 문자열로 저장
+- ✅ 하회일/상회일 추적 로직 전체 업데이트
+
+### 2026-01-07 (Bloomberg 연동)
+- ✅ Bloomberg API (blpapi) 3.25.11.1 설치
+- ✅ Python 3.14 → 3.12 다운그레이드 (blpapi 호환성)
+- ✅ Windows 콘솔 UTF-8 인코딩 설정
+- ✅ Bloomberg 티커 자동 변환 (`KS` → `KS Equity`)
+- ✅ 배치 파일 업데이트 (UTF-8, Python 3.12 지정)
+- ✅ `start_bloomberg.py` - Bloomberg 전용 실행 파일
+- ✅ `start.py` - 통합 실행 파일 (Bloomberg + 로컬)
+- ✅ `src/bloomberg.py` - Bloomberg API 연동 모듈
+- ✅ `src/ticker_converter.py` - 한글 종목명 변환
+- ✅ requirements.txt 업데이트 (tabulate, xbbg 추가)
+- ✅ StockAnalyzer 초기화 오류 수정 (screener 파라미터 제거)
+
+### 2026-01-07 (전략 단순화)
 - ✅ 윗꼬리/아래꼬리 분석 완전 제거
 - ✅ 3개 조건 → 2개 조건으로 전략 단순화
 - ✅ 20일선 가격 명시적 표시
@@ -307,6 +475,111 @@ XLSX/CSV 파일은 다음 컬럼을 포함해야 합니다:
 
 ## 문제 해결 기록
 
+### Bloomberg API 설치 문제
+
+#### 문제 1: Python 3.14에서 blpapi 설치 불가
+**증상**:
+```
+ERROR: Could not find a version that satisfies the requirement blpapi
+```
+
+**원인**: Python 3.14는 blpapi가 지원하지 않음 (Python 3.8-3.12만 지원)
+
+**해결**:
+1. Python 3.12.10 설치
+2. VSCode에서 인터프리터 변경: `Ctrl+Shift+P` → "Python: Select Interpreter" → Python 3.12
+3. 패키지 재설치
+
+#### 문제 2: 소스 코드 버전 다운로드 (컴파일 에러)
+**증상**:
+```
+error: Microsoft Visual C++ 14.0 or greater is required
+```
+
+**원인**: 소스 코드 버전(~340KB)을 다운로드하여 C++ 컴파일러가 필요함
+
+**해결**: Bloomberg 공식 pip 저장소에서 미리 빌드된 wheel 파일 다운로드
+```bash
+py -3.12 -m pip download --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple blpapi --dest ".\blpapi_wheels"
+py -3.12 -m pip install ".\blpapi_wheels\blpapi-3.25.11.1-py3-none-win_amd64.whl"
+```
+
+#### 문제 3: 티커 형식 오류
+**증상**:
+```
+ValueError: 데이터를 가져올 수 없습니다: 000660 KS
+```
+
+**원인**: Bloomberg API는 `000660 KS Equity` 형식 필요
+
+**해결**: `src/bloomberg.py`에 자동 변환 로직 추가
+```python
+if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+    ticker = ticker + ' Equity'
+```
+
+#### 문제 4: 한글/이모지 출력 오류 (Windows 콘솔)
+**증상**:
+```
+UnicodeEncodeError: 'cp949' codec can't encode character
+```
+
+**원인**: Windows 콘솔 기본 인코딩이 cp949
+
+**해결**:
+1. 배치 파일에 `chcp 65001` 추가
+2. Python 코드에서 stdout 인코딩 강제 변경:
+```python
+if sys.platform == 'win32':
+    import codecs
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+```
+
+#### 문제 5: StockAnalyzer 초기화 오류
+**증상**:
+```
+TypeError: StockAnalyzer.__init__() got an unexpected keyword argument 'screener'
+```
+
+**원인**: StockAnalyzer는 내부적으로 screener를 생성하므로 외부에서 전달할 수 없음
+
+**해결**: `start.py`와 `start_bloomberg.py`에서 초기화 코드 수정
+```python
+# 수정 전
+screener = ExitSignalScreener()
+analyzer = StockAnalyzer(screener=screener)
+result = analyzer.analyze_latest(ticker, df)
+
+# 수정 후
+analyzer = StockAnalyzer()
+result = analyzer.analyze_latest(df, ticker)
+```
+
+#### 문제 6: 하회일 날짜 포맷 오류
+**증상**:
+```
+하회일이 233.0, 235.0, 242.0 같은 숫자로 표시됨
+```
+
+**원인**: `_track_ma_crossover` 함수에서 DataFrame의 숫자 인덱스(0, 1, 2, ...)를 하회일로 저장
+
+**해결**: `src/screener.py`의 `_track_ma_crossover` 함수 수정
+```python
+# 각 행 처리 시 Date 컬럼에서 실제 날짜를 가져와 사용
+for idx, row in df.iterrows():
+    # 현재 행의 날짜를 가져옴 (Date 컬럼이 있으면 사용, 없으면 인덱스 사용)
+    current_date = row.get('Date', idx)
+    if pd.notna(current_date) and hasattr(current_date, 'strftime'):
+        current_date = current_date.strftime('%Y-%m-%d')
+
+    # 하회 감지 시 current_date 저장 (기존: idx)
+    if prev_position == 'above' and current_position == 'below':
+        last_break_below = current_date  # idx 대신 current_date 사용
+```
+
+**결과**: 하회일이 "2024-10-18", "2024-10-20" 같은 표준 날짜 형식으로 표시됨
+
 ### Python 32비트 → 64비트 마이그레이션
 **문제**: pandas 2.x가 32비트 Python 미지원
 ```
@@ -331,6 +604,23 @@ ERROR: Could not parse vswhere.exe output
 ```
 
 또는 `run.bat` 사용
+
+### Bloomberg Terminal 연결 확인
+**테스트 명령어**:
+```bash
+py -3.12 -c "from xbbg import blp; print(blp.bdp('AAPL US Equity', 'PX_LAST'))"
+```
+
+**예상 출력**:
+```
+                px_last
+AAPL US Equity   262.36
+```
+
+**연결 실패 시 확인사항**:
+1. Bloomberg Terminal 실행 여부
+2. Bloomberg 로그인 상태
+3. 네트워크 연결
 
 ## 참고 문서
 

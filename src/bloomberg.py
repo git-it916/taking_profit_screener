@@ -105,6 +105,11 @@ def download_bloomberg_data(
     # [2단계] Bloomberg에서 데이터 다운로드
     # ====================================================================
     try:
+        # Bloomberg 티커 형식 확인 및 조정
+        # "005930 KS" -> "005930 KS Equity"
+        if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+            ticker = ticker + ' Equity'
+
         # xbbg.blp.bdh() 함수로 과거 데이터 다운로드
         df = blp.bdh(
             tickers=ticker,
