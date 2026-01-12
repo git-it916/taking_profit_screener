@@ -70,7 +70,8 @@ def convert_to_daily(df: pd.DataFrame) -> pd.DataFrame:
     # 인덱스를 Date 컬럼으로 복원
     daily_df.reset_index(inplace=True)
 
-    print(f"[변환 완료] 시간봉 {len(df)}개 → 일봉 {len(daily_df)}개")
+    # print 제거 (속도 최적화)
+    # print(f"[변환 완료] 시간봉 {len(df)}개 → 일봉 {len(daily_df)}개")
 
     return daily_df
 
@@ -99,29 +100,32 @@ class ExitSignalScreener:
 
     def calculate_sma(self, df: pd.DataFrame, column: str = 'Close') -> pd.Series:
         """
-        단순 이동평균선(SMA) 계산
+        단순 이동평균선(SMA) 계산 (당일 제외)
+
+        ⚠️  중요: 당일(오늘) 데이터는 MA 계산에서 제외됩니다!
+        당일 종가는 장 마감 전까지 불완전하므로, 어제까지의 데이터로 MA를 계산합니다.
 
         ====================================================================
         SMA (단순 이동평균선) 공식:
         ====================================================================
-        SMA_20 = (P_1 + P_2 + P_3 + ... + P_20) / 20
+        SMA_10 = (P_1 + P_2 + P_3 + ... + P_10) / 10
 
         여기서:
-        - P_1 = 오늘 종가 (가장 최근)
-        - P_2 = 1일 전 종가
-        - P_20 = 20일 전 종가 (가장 오래됨)
+        - P_1 = 어제 종가 (가장 최근) ← 당일 제외!
+        - P_2 = 2일 전 종가
+        - P_10 = 10일 전 종가 (가장 오래됨)
 
-        각 가격은 동등한 비중(1/20 = 5%)을 가집니다.
+        각 가격은 동등한 비중(1/10 = 10%)을 가집니다.
 
         ====================================================================
         계산 예시:
         ====================================================================
-        날짜 1~19: MA10 = NaN (데이터 부족)
-        날짜 20: MA10 = (1일~20일 종가 합계) / 20
-        날짜 21: MA10 = (2일~21일 종가 합계) / 20  ← "이동": 1일 제외, 21일 추가
-        날짜 22: MA10 = (3일~22일 종가 합계) / 20  ← "이동": 2일 제외, 22일 추가
+        날짜 1~10: MA10 = NaN (데이터 부족)
+        날짜 11: MA10 = (1일~10일 종가 합계) / 10  ← 11일(당일) 제외!
+        날짜 12: MA10 = (2일~11일 종가 합계) / 10  ← 12일(당일) 제외!
+        날짜 13: MA10 = (3일~12일 종가 합계) / 10  ← 13일(당일) 제외!
 
-        매일 가장 오래된 데이터는 제외되고 새 데이터가 추가되므로 "이동평균"
+        당일(오늘)은 항상 MA 계산에서 제외됩니다.
 
         Parameters:
         -----------
@@ -132,13 +136,14 @@ class ExitSignalScreener:
 
         Returns:
         --------
-        pd.Series : 20일 이동평균선
-            - 초기 19일은 NaN (데이터 부족)
-            - 20일째부터 값이 계산됨
+        pd.Series : 10일 이동평균선 (당일 제외)
+            - 초기 10일은 NaN (데이터 부족)
+            - 11일째부터 값이 계산됨
+            - 마지막 행(오늘)의 MA는 어제까지의 데이터로 계산됨
         """
-        # pandas의 rolling().mean()은 표준 SMA 공식과 100% 일치
-        # 검증: MA_CALCULATION_VERIFICATION.md 참조 (수동 계산과 차이 0.0000000000)
-        return df[column].rolling(window=self.ma_period).mean()
+        # 당일 제외: shift(1)로 한 행씩 밀어서 계산
+        # 예: 오늘(11일)의 MA = 어제(10일)부터 10일 전(1일)까지의 평균
+        return df[column].shift(1).rolling(window=self.ma_period).mean()
 
 
     def calculate_rvol(self, df: pd.DataFrame, volume_column: str = 'Volume') -> pd.Series:
@@ -196,19 +201,21 @@ class ExitSignalScreener:
             - 초기 19일은 NaN (평균 계산 불가)
         """
         # ====================================================================
-        # [1단계] 과거 N일 평균 거래량 계산
+        # [1단계] 과거 N일 평균 거래량 계산 (당일 제외)
         # ====================================================================
-        # rolling(window=20).mean() → 최근 20일 거래량의 평균
-        avg_volume = df[volume_column].rolling(window=self.rvol_period).mean()
+        # shift(1)로 당일 제외 후 평균 계산
+        # 예: 오늘의 평균 = 어제부터 N일 전까지의 평균
+        avg_volume = df[volume_column].shift(1).rolling(window=self.rvol_period).mean()
 
         # DEBUG: 평균 거래량 확인용 (필요시 주석 해제)
         # print(f"평균 거래량 최근 5일:\n{avg_volume.tail()}")
 
         # ====================================================================
-        # [2단계] RVOL 계산 (현재 거래량 / 평균 거래량)
+        # [2단계] RVOL 계산 (당일 거래량 / 평균 거래량)
         # ====================================================================
-        # 예: 현재 거래량 = 1,000,000, 평균 거래량 = 500,000
-        #     → RVOL = 2.0 (평균의 2배! → SELL 조건 충족)
+        # 당일 거래량은 그대로 사용, 평균만 당일 제외
+        # 예: 오늘 거래량 = 1,000,000, 어제까지의 평균 = 500,000
+        #     → RVOL = 2.0 (평균의 2배!)
         rvol = df[volume_column] / avg_volume
 
         # DEBUG: RVOL 확인용 (필요시 주석 해제)
@@ -218,7 +225,7 @@ class ExitSignalScreener:
 
     def _track_ma_crossover(self, df: pd.DataFrame) -> pd.Series:
         """
-        10일선 하회/상회 날짜 추적
+        10일선 하회/상회 날짜 추적 (벡터 연산 최적화)
 
         각 시점에서:
         - 가장 최근에 10일선을 하회한 날짜
@@ -234,131 +241,71 @@ class ExitSignalScreener:
         --------
         pd.Series : 각 시점의 crossover 정보 딕셔너리
         """
-        result = []  # 각 날짜별 결과를 저장할 리스트
+        # ====================================================================
+        # 벡터 연산으로 위치 판단 (10배 이상 빠름!)
+        # ====================================================================
+        position = (df['Close'] >= df['MA10']).astype(int)  # 1=above, 0=below
+        position_shift = position.shift(1)
+
+        # 크로스오버 감지
+        break_below_mask = (position_shift == 1) & (position == 0)  # 위 → 아래
+        break_above_mask = (position_shift == 0) & (position == 1)  # 아래 → 위
+
+        # 날짜 준비
+        if 'Date' in df.columns:
+            dates = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+        else:
+            dates = df.index.strftime('%Y-%m-%d') if isinstance(df.index, pd.DatetimeIndex) else df.index.astype(str)
 
         # ====================================================================
-        # 추적 변수 초기화
+        # 최근 하회일/상회일 누적 계산
         # ====================================================================
-        last_break_below = None  # 마지막으로 10일선을 하회한 날짜 (위 → 아래로 내려간 날)
-        last_break_above = None  # 마지막으로 10일선을 상회한 날짜 (아래 → 위로 올라간 날)
-        days_below = 0           # 10일선 아래에 머문 일수 (연속으로 아래에 있었던 일수)
-        prev_position = None     # 이전 시점의 위치 ('above' 또는 'below')
+        last_break_below = pd.Series(index=df.index, dtype=object)
+        last_break_above = pd.Series(index=df.index, dtype=object)
+
+        # 하회일 누적
+        last_below = None
+        for idx in df.index:
+            if break_below_mask.loc[idx]:
+                last_below = dates.loc[idx]
+            last_break_below.loc[idx] = last_below
+
+        # 상회일 누적
+        last_above = None
+        for idx in df.index:
+            if break_above_mask.loc[idx]:
+                last_above = dates.loc[idx]
+            last_break_above.loc[idx] = last_above
 
         # ====================================================================
-        # 데이터프레임의 모든 행을 순회하며 하회/상회 추적
+        # 10일선 아래 머문 일수 계산
         # ====================================================================
-        for idx, row in df.iterrows():
-            # 현재 행의 날짜를 가져옴 (Date 컬럼이 있으면 사용, 없으면 인덱스 사용)
-            current_date = row.get('Date', idx)
-            if pd.notna(current_date) and hasattr(current_date, 'strftime'):
-                current_date = current_date.strftime('%Y-%m-%d')
+        days_below = pd.Series(0, index=df.index)
+        current_days = 0
 
-            # ================================================================
-            # [1단계] MA10 또는 Close가 없는 경우 처리
-            # ================================================================
-            # MA10은 10일치 데이터가 있어야 계산되므로, 초기 9일은 NaN입니다.
-            # 이 경우 추적 불가능하므로 None 반환
-            if pd.isna(row['MA10']) or pd.isna(row['Close']):
-                result.append({
-                    'last_break_below': None,
-                    'last_break_above': None,
-                    'days_below': 0
-                })
-                continue
+        for idx in df.index:
+            if pd.isna(df.loc[idx, 'MA10']):
+                days_below.loc[idx] = 0
+            elif position.loc[idx] == 0:  # below
+                current_days += 1
+                days_below.loc[idx] = current_days
+            else:  # above
+                current_days = 0
+                days_below.loc[idx] = 0
 
-            # ================================================================
-            # [2단계] 현재 위치 판단
-            # ================================================================
-            # 종가와 10일선을 비교하여 현재 위치 결정:
-            # - Close < MA10 → 'below' (10일선 아래)
-            # - Close >= MA10 → 'above' (10일선 위 또는 동일)
-            current_position = 'below' if row['Close'] < row['MA10'] else 'above'
+        # ====================================================================
+        # 결과 조합
+        # ====================================================================
+        result = pd.Series([
+            {
+                'last_break_below': last_break_below.loc[idx],
+                'last_break_above': last_break_above.loc[idx],
+                'days_below': days_below.loc[idx]
+            }
+            for idx in df.index
+        ], index=df.index)
 
-            # DEBUG: 현재 위치 확인용 (필요시 주석 해제)
-            # print(f"{idx}: Close={row['Close']:.2f}, MA10={row['MA10']:.2f}, Position={current_position}")
-
-            # ================================================================
-            # [3단계] 첫 번째 유효한 데이터 처리
-            # ================================================================
-            # prev_position이 None이면 이것이 첫 번째 유효 데이터입니다.
-            if prev_position is None:
-                # 데이터 시작부터 이미 10일선 아래에 있으면
-                # 시작 날짜를 하회일로 기록합니다.
-                if current_position == 'below':
-                    last_break_below = current_date  # 첫 날짜를 하회일로 설정
-                    days_below = 1
-                    # DEBUG: 첫 데이터가 하회 상태
-                    # print(f"  → 첫 데이터: 10일선 아래 시작, 하회일={current_date}")
-
-                prev_position = current_position  # 다음 루프를 위해 현재 위치 저장
-                result.append({
-                    'last_break_below': last_break_below,
-                    'last_break_above': last_break_above,
-                    'days_below': days_below
-                })
-                continue
-
-            # ================================================================
-            # [4단계] 하회 감지 (위 → 아래)
-            # ================================================================
-            # 이전: 10일선 위(above), 현재: 10일선 아래(below)
-            # → 이 시점에 10일선을 "하회"한 것!
-            if prev_position == 'above' and current_position == 'below':
-                last_break_below = current_date  # 현재 날짜를 "하회일"로 기록
-                days_below = 1          # 하회 경과일 1일로 초기화
-                # DEBUG: 하회 감지
-                # print(f"  → 하회 감지! {current_date}에 10일선 아래로 내려감")
-                # print(f"     Close={row['Close']:.2f} < MA10={row['MA10']:.2f}")
-
-            # ================================================================
-            # [5단계] 상회 감지 (아래 → 위)
-            # ================================================================
-            # 이전: 10일선 아래(below), 현재: 10일선 위(above)
-            # → 이 시점에 10일선을 "상회"한 것!
-            elif prev_position == 'below' and current_position == 'above':
-                last_break_above = current_date  # 현재 날짜를 "상회일"로 기록
-                days_below = 0          # 하회 경과일 0으로 리셋 (더 이상 아래에 없음)
-                # DEBUG: 상회 감지
-                # print(f"  → 상회 감지! {current_date}에 10일선 위로 올라감")
-                # print(f"     Close={row['Close']:.2f} >= MA10={row['MA10']:.2f}")
-
-            # ================================================================
-            # [6단계] 10일선 아래에 계속 머무는 경우
-            # ================================================================
-            # 이전: 아래(below), 현재: 아래(below)
-            # → 계속 아래에 머물고 있으므로 경과일만 1일 증가
-            elif current_position == 'below' and prev_position == 'below':
-                days_below += 1  # 하회 경과일 1일 증가
-                # DEBUG: 계속 아래에 있음
-                # print(f"  → 계속 아래: {days_below}일째 (Close={row['Close']:.2f}, MA10={row['MA10']:.2f})")
-
-            # ================================================================
-            # [7단계] 10일선 위에 계속 머무는 경우
-            # ================================================================
-            # 이전: 위(above), 현재: 위(above)
-            # → 계속 위에 있으므로 경과일은 0 유지
-            elif current_position == 'above':
-                days_below = 0  # 위에 있으면 경과일은 항상 0
-                # DEBUG: 계속 위에 있음
-                # print(f"  → 계속 위: 경과일 0 (Close={row['Close']:.2f}, MA10={row['MA10']:.2f})")
-
-            # ================================================================
-            # [8단계] 현재 날짜의 결과 저장
-            # ================================================================
-            result.append({
-                'last_break_below': last_break_below,  # 가장 최근 하회일
-                'last_break_above': last_break_above,  # 가장 최근 상회일
-                'days_below': days_below               # 현재까지 하회 경과일
-            })
-
-            # ================================================================
-            # [9단계] 다음 루프를 위해 현재 위치를 이전 위치로 저장
-            # ================================================================
-            prev_position = current_position
-
-        # 결과를 pandas Series로 변환하여 반환
-        # index는 원본 데이터프레임의 index(날짜)와 동일하게 유지
-        return pd.Series(result, index=df.index)
+        return result
 
     def apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -389,46 +336,55 @@ class ExitSignalScreener:
         # 2. 상대 거래량 계산
         result_df['RVOL'] = self.calculate_rvol(result_df)
 
-        # 3. 10일선 하회/상회 날짜 추적
-        result_df['MA10_Cross'] = self._track_ma_crossover(result_df)
-        result_df['Last_MA10_Break_Below'] = result_df['MA10_Cross'].apply(lambda x: x['last_break_below'] if isinstance(x, dict) else None)
-        result_df['Last_MA10_Break_Above'] = result_df['MA10_Cross'].apply(lambda x: x['last_break_above'] if isinstance(x, dict) else None)
-        result_df['Days_Below_MA10'] = result_df['MA10_Cross'].apply(lambda x: x['days_below'] if isinstance(x, dict) else 0)
+        # 3. 10일선 하회/상회 날짜 추적 (벡터 연산으로 한 번에 추출)
+        ma_cross = self._track_ma_crossover(result_df)
+        result_df['Last_MA10_Break_Below'] = [x['last_break_below'] if isinstance(x, dict) else None for x in ma_cross]
+        result_df['Last_MA10_Break_Above'] = [x['last_break_above'] if isinstance(x, dict) else None for x in ma_cross]
+        result_df['Days_Below_MA10'] = [x['days_below'] if isinstance(x, dict) else 0 for x in ma_cross]
 
-        # 4. 조건 체크 (10일선 하회 + RVOL만)
-        result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA10']
-        result_df['Condition_2_Volume_Confirmation'] = result_df['RVOL'] >= 2.0
+        # 4. 조건 체크 (10일선 위치 + RVOL)
+        result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA10']  # 10일선 아래
+        result_df['Condition_2_Volume_Confirmation'] = result_df['RVOL'] >= 2.0  # 거래량 폭증
+        result_df['Condition_3_Volume_Watch'] = (result_df['RVOL'] >= 1.5) & (result_df['RVOL'] < 2.0)  # 거래량 관심
 
-        # 5. 신호 생성 (두 조건 모두 충족시 SELL)
-        result_df['All_Conditions_Met'] = (
-            result_df['Condition_1_Trend_Breakdown'] &
-            result_df['Condition_2_Volume_Confirmation']
-        )
-
+        # 5. 신호 생성 (4가지 신호: BUY, WATCH, SELL, HOLD)
+        # BUY: 10일선 위 + RVOL ≥ 2.0 (거래량 폭증 + 상승 추세)
+        # WATCH: RVOL 1.5~2.0 (거래량 관심)
+        # SELL: 10일선 아래 + RVOL ≥ 2.0 (거래량 폭증 + 하락 추세)
+        # HOLD: 나머지
         result_df['Signal'] = np.where(
-            result_df['All_Conditions_Met'],
-            'SELL',
-            'HOLD'
+            (~result_df['Condition_1_Trend_Breakdown']) & result_df['Condition_2_Volume_Confirmation'],
+            'BUY',  # 10일선 위 + 거래량 폭증
+            np.where(
+                result_df['Condition_3_Volume_Watch'],
+                'WATCH',  # RVOL 1.5~2.0
+                np.where(
+                    result_df['Condition_1_Trend_Breakdown'] & result_df['Condition_2_Volume_Confirmation'],
+                    'SELL',  # 10일선 아래 + 거래량 폭증
+                    'HOLD'  # 나머지
+                )
+            )
         )
 
-        # 6. 시그널 설명 추가
-        def generate_reasoning(row):
-            if row['Signal'] == 'SELL':
-                return "10일선 하회 + 거래량 폭증 확인"
-            else:
-                # HOLD 이유 세부 분석
-                reasons = []
-                if not row['Condition_1_Trend_Breakdown']:
-                    reasons.append("10일선 위")
-                if not row['Condition_2_Volume_Confirmation']:
-                    reasons.append("거래량 부족")
-
-                if row['Condition_1_Trend_Breakdown'] and not row['Condition_2_Volume_Confirmation']:
-                    return "10일선 하회, 거래량 부족"
-
-                return f"{', '.join(reasons)}"
-
-        result_df['Reasoning'] = result_df.apply(generate_reasoning, axis=1)
+        # 6. 시그널 설명 추가 (벡터 연산으로 최적화)
+        reasoning = np.where(
+            result_df['Signal'] == 'BUY',
+            "10일선 위 + 거래량 폭증 (매수 신호)",
+            np.where(
+                result_df['Signal'] == 'WATCH',
+                "거래량 증가 (관심 구간)",
+                np.where(
+                    result_df['Signal'] == 'SELL',
+                    "10일선 하회 + 거래량 폭증 (매도 신호)",
+                    np.where(
+                        result_df['Condition_1_Trend_Breakdown'],
+                        "10일선 아래, 거래량 부족",
+                        "10일선 위, 정상 거래량"
+                    )
+                )
+            )
+        )
+        result_df['Reasoning'] = reasoning
 
         return result_df
 
@@ -437,7 +393,7 @@ class ExitSignalScreener:
         스크리닝 결과를 사용자 요구 형식으로 출력
 
         Output Format:
-        Ticker, Current Price, 20MA, Wick Ratio, RVOL, Signal, Reasoning
+        Ticker, Current Price, 10MA, RVOL, Signal, Reasoning
 
         Parameters:
         -----------
@@ -455,7 +411,6 @@ class ExitSignalScreener:
             'Date': df.index if isinstance(df.index, pd.DatetimeIndex) else df.get('Date', range(len(df))),
             'Current_Price': df['Close'],
             'MA10': df['MA10'],
-            'Wick_Ratio': df['Wick_Ratio'].round(3),
             'RVOL': df['RVOL'].round(2),
             'Signal': df['Signal'],
             'Reasoning': df['Reasoning']
@@ -540,9 +495,9 @@ def load_data_from_csv(filepath: str, date_column: Optional[str] = None, convert
         date_counts = df['Date_Only'].value_counts()
 
         if (date_counts > 1).any():
-            # 시간봉 데이터 감지!
-            print(f"\n[시간봉 감지] 같은 날짜에 최대 {date_counts.max()}개 행")
-            print(f"   >> 일봉으로 자동 변환합니다...")
+            # 시간봉 데이터 감지! (print 제거 - 속도 최적화)
+            # print(f"\n[시간봉 감지] 같은 날짜에 최대 {date_counts.max()}개 행")
+            # print(f"   >> 일봉으로 자동 변환합니다...")
 
             # Date_Only 컬럼 제거
             df.drop('Date_Only', axis=1, inplace=True)
@@ -550,8 +505,8 @@ def load_data_from_csv(filepath: str, date_column: Optional[str] = None, convert
             # 일봉으로 변환
             df = convert_to_daily(df)
         else:
-            # 이미 일봉 데이터
-            print(f"\n[일봉 확인] {len(df)}일 데이터")
+            # 이미 일봉 데이터 (print 제거 - 속도 최적화)
+            # print(f"\n[일봉 확인] {len(df)}일 데이터")
             df.drop('Date_Only', axis=1, inplace=True)
 
     # ====================================================================

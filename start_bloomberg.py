@@ -28,7 +28,7 @@ from src.bloomberg import download_bloomberg_data, get_multiple_security_names
 from src.visualizer import create_trend_heatmap
 
 
-def analyze_from_bloomberg(ticker: str, period: str = '1Y') -> dict:
+def analyze_from_bloomberg(ticker: str, period: str = '1Y', show_progress: bool = True) -> dict:
     """
     Bloomberg에서 데이터를 받아 분석
 
@@ -38,6 +38,8 @@ def analyze_from_bloomberg(ticker: str, period: str = '1Y') -> dict:
         Bloomberg 티커 (예: "005930 KS")
     period : str
         데이터 기간 (기본값: '1Y')
+    show_progress : bool
+        진행 상황 표시 여부 (기본값: True)
 
     Returns:
     --------
@@ -45,13 +47,11 @@ def analyze_from_bloomberg(ticker: str, period: str = '1Y') -> dict:
     """
     try:
         # ================================================================
-        # [1단계] Bloomberg에서 데이터 다운로드
+        # [1단계] Bloomberg에서 데이터 다운로드 (verbose 제어)
         # ================================================================
-        print(f"\n[분석 중] {ticker}...")
-        df = download_bloomberg_data(ticker, period=period)
+        df = download_bloomberg_data(ticker, period=period, verbose=show_progress)
 
         if df is None or len(df) == 0:
-            print(f"  ✗ 데이터 없음")
             return None
 
         # ================================================================
@@ -60,13 +60,9 @@ def analyze_from_bloomberg(ticker: str, period: str = '1Y') -> dict:
         analyzer = StockAnalyzer()
         result = analyzer.analyze_latest(df, ticker)
 
-        print(f"  ✓ 분석 완료")
         return result
 
     except Exception as e:
-        print(f"  ✗ 분석 실패: {e}")
-        import traceback
-        traceback.print_exc()
         return None
 
 
@@ -136,18 +132,42 @@ def main():
             period = '1Y'
 
         # ================================================================
-        # 분석 실행
+        # 분석 실행 (진행 상황 표시)
         # ================================================================
         print("\n" + "="*80)
         print(f"총 {len(tickers)}개 종목 분석 시작")
         print("="*80)
+        print()
 
+        from datetime import datetime as dt
         results = []
-        for ticker in tickers:
-            result = analyze_from_bloomberg(ticker, period=period)
+        failed_count = 0
+        start_time = dt.now()
+
+        for i, ticker in enumerate(tickers, 1):
+            result = analyze_from_bloomberg(ticker, period=period, show_progress=False)
 
             if result:
                 results.append(result)
+            else:
+                failed_count += 1
+
+            # 진행 상황 표시 (한 줄로 업데이트)
+            elapsed = dt.now() - start_time
+            progress = i / len(tickers) * 100
+
+            # 프로그레스 바 생성
+            bar_length = 40
+            filled_length = int(bar_length * i // len(tickers))
+            bar = '█' * filled_length + '░' * (bar_length - filled_length)
+
+            print(f"\r진행: [{bar}] {i}/{len(tickers)} ({progress:.1f}%) | "
+                  f"성공: {len(results)} | 실패: {failed_count} | "
+                  f"경과: {str(elapsed).split('.')[0]}", end='', flush=True)
+
+        print()  # 줄바꿈
+        total_time = dt.now() - start_time
+        print(f"\n✓ 분석 완료 - 소요시간: {str(total_time).split('.')[0]}")
 
         if not results:
             print("\n[에러] 분석 결과가 없습니다")

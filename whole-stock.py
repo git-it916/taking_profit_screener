@@ -4,12 +4,12 @@ Taking Profit Screener - 전종목 분석 (코스피 + 코스닥)
 py -3.12 whole-stock.py
 
 Bloomberg Terminal에서 전종목 데이터를 받아 분석합니다.
-최근 5일 내 10일선 돌파 + RVOL≥2.0 종목만 필터링하여 표시합니다.
+10일선 위 + RVOL≥1.3 종목만 필터링하여 표시합니다.
 """
 import os
 import sys
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from tabulate import tabulate
 
 # Windows 콘솔 인코딩 설정
@@ -43,9 +43,9 @@ def get_tickers_from_excel(file_path: str) -> list:
     list : 티커 리스트
 
     엑셀 파일 형식:
-    - 첫 번째 컬럼에 티커 코드 (예: 005930, 000660)
-    - 두 번째 컬럼에 거래소 코드 (KS 또는 KQ) - 옵션
-    - 또는 이미 "005930 KS" 형식으로 되어있어도 됨
+    - 'bloomberg_ticker' 컬럼에 티커 리스트 (예: 005930 KS, 000660 KQ)
+    - 또는 첫 번째 컬럼에 티커 코드 (예: 005930, 000660)
+    - 두 번째 컬럼에 거래소 코드 (KS 또는 KQ) - 선택사항
     """
     import pandas as pd
 
@@ -62,11 +62,17 @@ def get_tickers_from_excel(file_path: str) -> list:
 
         tickers = []
 
-        # 첫 번째 컬럼 확인
-        first_col = df.columns[0]
+        # bloomberg_ticker 컬럼이 있는지 확인 (우선순위)
+        if 'bloomberg_ticker' in df.columns:
+            print(f"  ✓ 'bloomberg_ticker' 컬럼 발견")
+            target_col = 'bloomberg_ticker'
+        else:
+            # 첫 번째 컬럼 사용
+            target_col = df.columns[0]
+            print(f"  ℹ️  'bloomberg_ticker' 컬럼 없음, 첫 번째 컬럼 사용: {target_col}")
 
         for idx, row in df.iterrows():
-            ticker_value = str(row[first_col]).strip()
+            ticker_value = str(row[target_col]).strip()
 
             # 빈 값 무시
             if not ticker_value or ticker_value == 'nan':
@@ -86,14 +92,12 @@ def get_tickers_from_excel(file_path: str) -> list:
                         # 거래소 코드가 없으면 6자리 숫자로 판단
                         if len(ticker_value) == 6 and ticker_value.isdigit():
                             # 기본값: KS (코스피)
-                            print(f"  ⚠️  거래소 코드 없음: {ticker_value}, 기본값 KS 사용")
                             tickers.append(f"{ticker_value} KS")
                         else:
                             tickers.append(ticker_value)
                 else:
                     # 컬럼이 하나뿐이면 기본값 사용
                     if len(ticker_value) == 6 and ticker_value.isdigit():
-                        print(f"  ⚠️  거래소 코드 없음: {ticker_value}, 기본값 KS 사용")
                         tickers.append(f"{ticker_value} KS")
                     else:
                         tickers.append(ticker_value)
@@ -133,8 +137,8 @@ def analyze_from_bloomberg(ticker: str, period: str = '2M') -> dict:
     dict : 분석 결과
     """
     try:
-        # Bloomberg에서 데이터 다운로드
-        df = download_bloomberg_data(ticker, period=period)
+        # Bloomberg에서 데이터 다운로드 (verbose=False로 메시지 숨김)
+        df = download_bloomberg_data(ticker, period=period, verbose=False)
 
         if df is None or len(df) == 0:
             return None
@@ -149,16 +153,73 @@ def analyze_from_bloomberg(ticker: str, period: str = '2M') -> dict:
         return None
 
 
-def filter_recent_breakout_stocks(results: list, days: int = 5) -> pd.DataFrame:
+def analyze_tickers_batch(tickers: list, period: str = '2M', batch_size: int = 50) -> list:
     """
-    최근 N일 내 10일선 돌파 + RVOL≥2.0 종목 필터링
+    배치 방식으로 여러 티커 분석 (Bloomberg API 효율적 사용)
+
+    Parameters:
+    -----------
+    tickers : list
+        분석할 티커 리스트
+    period : str
+        데이터 기간
+    batch_size : int
+        배치 크기 (기본값: 50)
+
+    Returns:
+    --------
+    list : 분석 결과 리스트
+    """
+    results = []
+    failed_count = 0
+
+    print(f"\n총 {len(tickers)}개 종목 분석 시작...")
+    print(f"배치 크기: {batch_size}개씩 처리")
+    print(f"진행 상황은 10개마다 표시됩니다.\n")
+
+    start_time = datetime.now()
+
+    for i, ticker in enumerate(tickers, 1):
+        result = analyze_from_bloomberg(ticker, period=period)
+
+        if result:
+            results.append(result)
+        else:
+            failed_count += 1
+
+        # 진행 상황 표시 (10개마다)
+        if i % 10 == 0 or i == len(tickers):
+            elapsed = datetime.now() - start_time
+            progress = i / len(tickers) * 100
+            rate = i / elapsed.total_seconds() if elapsed.total_seconds() > 0 else 0
+            remaining = (len(tickers) - i) / rate if rate > 0 else 0
+
+            # 한 줄로 출력 (이전 줄 덮어쓰기)
+            print(f"\r[진행중] {i}/{len(tickers)} ({progress:.1f}%) "
+                  f"| 경과: {str(elapsed).split('.')[0]} | 속도: {rate:.2f}종목/초 | "
+                  f"남은시간: ~{int(remaining/60)}분 {int(remaining%60)}초", end='', flush=True)
+
+    print()  # 줄바꿈
+    total_time = datetime.now() - start_time
+
+    print(f"\n분석 완료 - 소요시간: {str(total_time).split('.')[0]}")
+    print(f"성공: {len(results)}개, 실패: {failed_count}개")
+
+    return results
+
+
+def filter_recent_breakout_stocks(results: list, days: int = 5, rvol_threshold: float = 1.3) -> pd.DataFrame:
+    """
+    10일선 위 + RVOL≥threshold 종목 필터링
 
     Parameters:
     -----------
     results : list
         분석 결과 리스트
     days : int
-        최근 며칠 이내 (기본값: 5일)
+        (사용 안 함, 하위 호환성 유지)
+    rvol_threshold : float
+        RVOL 최소 기준 (기본값: 1.3)
 
     Returns:
     --------
@@ -172,30 +233,11 @@ def filter_recent_breakout_stocks(results: list, days: int = 5) -> pd.DataFrame:
     # 조건 1: 현재 10일선 위에 있음 (상승세)
     condition_above = df['current_position'] == 'above'
 
-    # 조건 2: RVOL >= 2.0 (거래량 폭증)
-    condition_rvol = df['rvol'] >= 2.0
+    # 조건 2: RVOL >= threshold (거래량 증가)
+    condition_rvol = df['rvol'] >= rvol_threshold
 
-    # 조건 3: 최근 N일 내 10일선 돌파
-    cutoff_date = datetime.now() - timedelta(days=days)
-
-    def check_recent_breakout(row):
-        """최근 N일 내 10일선 돌파 확인"""
-        last_break_above = row.get('last_break_above')
-
-        if not last_break_above or last_break_above == '?':
-            return False
-
-        try:
-            # 날짜 문자열을 datetime으로 변환
-            break_date = datetime.strptime(last_break_above, '%Y-%m-%d')
-            return break_date >= cutoff_date
-        except:
-            return False
-
-    condition_recent = df.apply(check_recent_breakout, axis=1)
-
-    # 모든 조건을 만족하는 종목 필터링
-    filtered = df[condition_above & condition_rvol & condition_recent].copy()
+    # 두 조건을 만족하는 종목 필터링
+    filtered = df[condition_above & condition_rvol].copy()
 
     # RVOL 기준 내림차순 정렬
     filtered = filtered.sort_values('rvol', ascending=False)
@@ -212,7 +254,7 @@ def main():
     print("\n⚠️  주의사항:")
     print("  1. Bloomberg Terminal이 실행 중이어야 합니다")
     print("  2. Bloomberg에 로그인되어 있어야 합니다")
-    print("  3. 전체 종목 분석은 30분~1시간 소요될 수 있습니다")
+    print("  3. 전종목 분석은 약 10~15분 소요됩니다 (1개월 데이터)")
 
     # ====================================================================
     # 엑셀 파일에서 티커 로드
@@ -220,19 +262,24 @@ def main():
     print("\n" + "="*80)
     print("티커 리스트 파일 입력")
     print("="*80)
+
+    # 기본 파일 경로
+    default_file = "bloomberg_ticker.xlsx"
+
+    print(f"\n기본 파일: {default_file}")
+    print("다른 파일을 사용하려면 경로를 입력하세요 (엔터=기본 파일 사용)")
     print("\n엑셀 파일 형식:")
-    print("  - 첫 번째 컬럼: 티커 코드 (예: 005930)")
-    print("  - 두 번째 컬럼: 거래소 코드 (KS 또는 KQ) - 선택사항")
-    print("  - 또는 '005930 KS' 형식으로 이미 포맷되어 있어도 됨")
+    print("  - 'bloomberg_ticker' 컬럼에 티커 리스트 (예: 005930 KS, 000660 KQ)")
 
-    file_path = input("\n엑셀 파일 경로를 입력하세요: ").strip()
+    user_input = input("\n파일 경로 (엔터=기본): ").strip()
 
-    # 따옴표 제거 (사용자가 경로를 따옴표로 감쌀 수 있음)
-    file_path = file_path.strip('"').strip("'")
-
-    if not file_path:
-        print("\n[에러] 파일 경로를 입력해주세요")
-        return
+    # 사용자 입력이 없으면 기본 파일 사용
+    if not user_input:
+        file_path = default_file
+        print(f"✓ 기본 파일 사용: {default_file}")
+    else:
+        # 따옴표 제거 (사용자가 경로를 따옴표로 감쌀 수 있음)
+        file_path = user_input.strip('"').strip("'")
 
     # 엑셀 파일에서 티커 읽기
     all_tickers = get_tickers_from_excel(file_path)
@@ -250,50 +297,26 @@ def main():
         return
 
     # ====================================================================
-    # 전종목 분석 실행
+    # 전종목 분석 실행 (순차 처리)
     # ====================================================================
     print("\n" + "="*80)
-    print("전종목 분석 시작 (2개월 데이터)")
+    print("전종목 분석 시작 (1개월 데이터)")
     print("="*80)
 
-    results = []
-    failed_count = 0
-
-    start_time = datetime.now()
-
-    for i, ticker in enumerate(all_tickers, 1):
-        # 진행 상황 표시
-        if i % 50 == 0 or i == 1:
-            elapsed = datetime.now() - start_time
-            print(f"\n[진행중] {i}/{len(all_tickers)} ({i/len(all_tickers)*100:.1f}%) - 경과시간: {elapsed}")
-
-        result = analyze_from_bloomberg(ticker, period='2M')
-
-        if result:
-            results.append(result)
-        else:
-            failed_count += 1
-
-    total_time = datetime.now() - start_time
-
-    print(f"\n" + "="*80)
-    print(f"전종목 분석 완료 - 소요시간: {total_time}")
-    print(f"="*80)
-    print(f"성공: {len(results)}개")
-    print(f"실패: {failed_count}개")
+    results = analyze_tickers_batch(all_tickers, period='1M')
 
     if not results:
         print("\n[에러] 분석 결과가 없습니다")
         return
 
     # ====================================================================
-    # 필터링: 최근 5일 내 10일선 돌파 + RVOL≥2.0
+    # 필터링: 10일선 위 + RVOL≥1.3
     # ====================================================================
     print("\n" + "="*80)
-    print("스크리닝: 최근 5일 내 10일선 돌파 + RVOL≥2.0 종목")
+    print("스크리닝: 10일선 위 + RVOL≥1.3 종목")
     print("="*80)
 
-    filtered_df = filter_recent_breakout_stocks(results, days=5)
+    filtered_df = filter_recent_breakout_stocks(results, rvol_threshold=1.3)
 
     if filtered_df.empty:
         print("\n조건을 만족하는 종목이 없습니다.")
@@ -404,6 +427,61 @@ def main():
             print(f"✗ 시각화 생성 실패: {e}")
             import traceback
             traceback.print_exc()
+
+    # ====================================================================
+    # 조건별 맞춤 필터링 (자동 실행)
+    # ====================================================================
+    print("\n" + "="*80)
+    print("조건별 맞춤 필터링")
+    print("="*80)
+    print(f"\n현재 필터링된 종목 (10일선 위 + RVOL≥1.3): {len(filtered_df)}개")
+    print(f"전체 분석 성공한 종목: {len(results)}개")
+
+    all_results_df = pd.DataFrame(results)
+
+    print("\n1. RVOL 최소값을 입력하세요 (예: 1.3)")
+    rvol_min_input = input("   RVOL ≥ ").strip()
+    rvol_min = float(rvol_min_input) if rvol_min_input else 1.3
+
+    print("\n2. 10일선 위치를 선택하세요")
+    print("   1: 10일선 위만")
+    print("   2: 10일선 아래만")
+    print("   3: 전체")
+    position_choice = input("   선택 (1-3): ").strip()
+
+    # 필터링
+    filtered = all_results_df[all_results_df['rvol'] >= rvol_min]
+
+    if position_choice == '1':
+        filtered = filtered[filtered['current_position'] == 'above']
+        position_desc = "10일선 위"
+    elif position_choice == '2':
+        filtered = filtered[filtered['current_position'] == 'below']
+        position_desc = "10일선 아래"
+    else:
+        position_desc = "전체"
+
+    filtered = filtered.sort_values('rvol', ascending=False)
+
+    print(f"\n[필터링 결과] {len(filtered)}개 종목 (RVOL ≥ {rvol_min}, {position_desc})")
+    print("="*80)
+
+    for idx, (_, row) in enumerate(filtered.iterrows(), 1):
+        ticker = row['ticker']
+        rvol = row['rvol']
+        position = "↑10일선위" if row['current_position'] == 'above' else "↓10일선아래"
+        ma_dist = row['ma_distance_percent']
+        close = row['close_price']
+        print(f"  {idx:3d}. {ticker:12s}  {position}  현재가: {close:8.0f}  괴리율: {ma_dist:+6.1f}%  RVOL: {rvol:5.1f}배")
+
+    # CSV 저장 옵션
+    print("\n" + "="*80)
+    save_custom = input("\n이 결과를 CSV로 저장하시겠습니까? (y/n): ").strip().lower()
+    if save_custom == 'y':
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"맞춤필터_RVOL{rvol_min}_{position_desc}_{timestamp}.csv"
+        filtered.to_csv(filename, index=False, encoding='utf-8-sig')
+        print(f"✓ 저장 완료: {filename}")
 
 
 if __name__ == "__main__":

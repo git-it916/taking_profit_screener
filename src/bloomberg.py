@@ -15,7 +15,8 @@ def download_bloomberg_data(
     ticker: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    period: str = '1Y'
+    period: str = '1Y',
+    verbose: bool = True
 ) -> pd.DataFrame:
     """
     Bloomberg에서 OHLCV 데이터 다운로드
@@ -97,9 +98,10 @@ def download_bloomberg_data(
 
         start_date = start_dt.strftime('%Y-%m-%d')
 
-    print(f"\n[Bloomberg 다운로드]")
-    print(f"  티커: {ticker}")
-    print(f"  기간: {start_date} ~ {end_date}")
+    if verbose:
+        print(f"\n[Bloomberg 다운로드]")
+        print(f"  티커: {ticker}")
+        print(f"  기간: {start_date} ~ {end_date}")
 
     # ====================================================================
     # [2단계] Bloomberg에서 데이터 다운로드
@@ -150,12 +152,14 @@ def download_bloomberg_data(
         # NaN 제거
         df = df.dropna()
 
-        print(f"  ✓ {len(df)}개 일봉 데이터 다운로드 완료")
+        if verbose:
+            print(f"  ✓ {len(df)}개 일봉 데이터 다운로드 완료")
 
         return df
 
     except Exception as e:
-        print(f"  ✗ 다운로드 실패: {e}")
+        if verbose:
+            print(f"  ✗ 다운로드 실패: {e}")
         raise
 
 
