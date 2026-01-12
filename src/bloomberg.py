@@ -159,6 +159,131 @@ def download_bloomberg_data(
         raise
 
 
+def get_security_name(ticker: str) -> str:
+    """
+    Bloomberg 티커에서 종목명 조회
+
+    Parameters:
+    -----------
+    ticker : str
+        Bloomberg 티커 (예: "005930 KS", "AAPL US")
+
+    Returns:
+    --------
+    str : 종목명 (예: "Samsung Electronics Co Ltd", "삼성전자")
+    """
+    try:
+        from xbbg import blp
+    except ImportError:
+        return ticker  # xbbg 없으면 티커 그대로 반환
+
+    try:
+        # Bloomberg 티커 형식 확인 및 조정
+        if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+            ticker = ticker + ' Equity'
+
+        # NAME 필드 조회
+        result = blp.bdp(tickers=ticker, flds='NAME')
+
+        if result is not None and not result.empty:
+            name = result.iloc[0]['NAME']
+            if pd.notna(name):
+                return str(name)
+
+        # NAME이 없으면 티커 반환
+        return ticker.replace(' Equity', '')
+
+    except Exception as e:
+        # 오류 발생시 티커 그대로 반환
+        return ticker.replace(' Equity', '')
+
+
+def get_multiple_security_names(tickers: List[str]) -> dict:
+    """
+    여러 티커의 종목명을 한번에 조회
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트
+
+    Returns:
+    --------
+    dict : {티커: 종목명} 딕셔너리
+    """
+    try:
+        from xbbg import blp
+    except ImportError:
+        print("  xbbg 라이브러리가 없습니다.")
+        return {ticker: ticker for ticker in tickers}
+
+    result_dict = {}
+
+    try:
+        # 티커 형식 조정
+        formatted_tickers = []
+        original_map = {}  # formatted -> original 매핑
+
+        for ticker in tickers:
+            if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+                formatted = ticker + ' Equity'
+            else:
+                formatted = ticker
+            formatted_tickers.append(formatted)
+            original_map[formatted] = ticker
+
+        print(f"  조회 중: {formatted_tickers[:3]}{'...' if len(formatted_tickers) > 3 else ''}")
+
+        # NAME 필드로 종목명 조회
+        # 주의: Bloomberg는 영문 회사명만 제공 (한글명 없음)
+        try:
+            result = blp.bdp(tickers=formatted_tickers, flds='NAME')
+
+            if result is not None and not result.empty:
+                # Bloomberg는 컬럼명을 소문자로 반환 ('name')
+                # 대소문자 무관하게 처리
+                column_name = None
+                for col in result.columns:
+                    if col.upper() == 'NAME':
+                        column_name = col
+                        break
+
+                if column_name and result[column_name].notna().any():
+                    print(f"  ✓ 종목명 조회 성공 (영문명)")
+
+                    # 결과 매핑
+                    for formatted_ticker, original_ticker in original_map.items():
+                        try:
+                            if formatted_ticker in result.index:
+                                name = result.loc[formatted_ticker, column_name]
+                                if pd.notna(name):
+                                    result_dict[original_ticker] = str(name)
+                                else:
+                                    result_dict[original_ticker] = original_ticker
+                            else:
+                                result_dict[original_ticker] = original_ticker
+                        except Exception:
+                            result_dict[original_ticker] = original_ticker
+                else:
+                    print(f"  ⚠️  NAME 컬럼을 찾을 수 없습니다.")
+                    result_dict = {ticker: ticker for ticker in tickers}
+            else:
+                print(f"  ⚠️  Bloomberg에서 데이터를 가져올 수 없습니다.")
+                result_dict = {ticker: ticker for ticker in tickers}
+
+        except Exception as e:
+            print(f"  ✗ 조회 실패: {e}")
+            result_dict = {ticker: ticker for ticker in tickers}
+
+    except Exception as e:
+        print(f"  ✗ 종목명 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        result_dict = {ticker: ticker for ticker in tickers}
+
+    return result_dict
+
+
 def download_multiple_tickers(
     tickers: List[str],
     start_date: Optional[str] = None,

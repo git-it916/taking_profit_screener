@@ -24,7 +24,7 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 from src import StockAnalyzer
-from src.bloomberg import download_bloomberg_data
+from src.bloomberg import download_bloomberg_data, get_multiple_security_names
 from src.visualizer import create_trend_heatmap
 
 
@@ -104,6 +104,21 @@ def main():
         print(f"\n입력된 티커: {tickers}")
 
         # ================================================================
+        # 종목명 조회 (Bloomberg API)
+        # ================================================================
+        print("\n[종목명 조회 중...]")
+        try:
+            ticker_names = get_multiple_security_names(tickers)
+            print("✓ 종목명 조회 완료")
+            print("\n종목 정보:")
+            for ticker in tickers:
+                name = ticker_names.get(ticker, ticker)
+                print(f"  - {ticker}: {name}")
+        except Exception as e:
+            print(f"⚠️  종목명 조회 실패 (티커로 표시됩니다): {e}")
+            ticker_names = {ticker: ticker for ticker in tickers}
+
+        # ================================================================
         # 데이터 기간 입력
         # ================================================================
         print("\n데이터 기간을 선택하세요:")
@@ -155,8 +170,12 @@ def main():
             else:
                 price_change_str = "-"
 
+            # 종목명 가져오기
+            ticker = row['ticker']
+            security_name = ticker_names.get(ticker, ticker)
+
             summary_data.append({
-                '종목': row['ticker'],
+                '종목': security_name,
                 '현재가': f"{row['close_price']:.0f}",
                 '전일비': price_change_str,
                 '10일선': f"{row['ma10']:.0f}",
@@ -187,11 +206,12 @@ def main():
         print("-" * 80)
         if len(falling_stocks) > 0:
             for _, stock in falling_stocks.iterrows():
+                ticker = stock['ticker']
                 trend_info = stock['trend_detail']
                 rvol_info = f"RVOL {stock['rvol']:.1f}배"
                 if stock['condition_2_volume_confirmation']:
                     rvol_info += " [거래량 폭증!]"
-                print(f"  - {stock['ticker']}: {trend_info}, {rvol_info}")
+                print(f"  - {ticker}: {trend_info}, {rvol_info}")
         else:
             print("  없음")
 
@@ -203,11 +223,12 @@ def main():
         print("-" * 80)
         if len(rising_stocks) > 0:
             for _, stock in rising_stocks.iterrows():
+                ticker = stock['ticker']
                 trend_info = stock['trend_detail']
                 rvol_info = f"RVOL {stock['rvol']:.1f}배"
                 if stock['condition_2_volume_confirmation']:
                     rvol_info += " [거래량 폭증!]"
-                print(f"  - {stock['ticker']}: {trend_info}, {rvol_info}")
+                print(f"  - {ticker}: {trend_info}, {rvol_info}")
         else:
             print("  없음")
 
@@ -221,9 +242,18 @@ def main():
         # SELL 신호 (10일선 하회 + 거래량 폭증)
         sell_stocks = results_df[results_df['signal'] == 'SELL']
         print(f"\n[강력 매도 신호] {len(sell_stocks)}개 종목 (10일선 하회 + 거래량 폭증):")
+        print("-" * 80)
         if len(sell_stocks) > 0:
             for _, stock in sell_stocks.iterrows():
-                print(f"  - {stock['ticker']}: {stock['reasoning']}")
+                ticker = stock['ticker']
+                security_name = ticker_names.get(ticker, ticker)
+
+                # 종목명을 30자로 맞춤 (왼쪽 정렬)
+                name_padded = f"{security_name:<30}"
+                trend_info = stock['trend_detail']
+                rvol_str = f"RVOL {stock['rvol']:.1f}배"
+
+                print(f"  {name_padded}  {trend_info}, {rvol_str}, SELL")
         else:
             print("  없음")
 
@@ -233,9 +263,18 @@ def main():
             ~results_df['condition_2_volume_confirmation']
         ]
         print(f"\n[주의 필요] {len(caution)}개 종목 (10일선 하회, 거래량 부족):")
+        print("-" * 80)
         if len(caution) > 0:
             for _, stock in caution.iterrows():
-                print(f"  - {stock['ticker']}: {stock['trend_detail']}, RVOL {stock['rvol']:.1f}배")
+                ticker = stock['ticker']
+                security_name = ticker_names.get(ticker, ticker)
+
+                # 종목명을 30자로 맞춤 (왼쪽 정렬)
+                name_padded = f"{security_name:<30}"
+                trend_info = stock['trend_detail']
+                rvol_str = f"RVOL {stock['rvol']:.1f}배"
+
+                print(f"  {name_padded}  {trend_info}, {rvol_str}, HOLD")
         else:
             print("  없음")
 
@@ -245,9 +284,18 @@ def main():
             results_df['condition_2_volume_confirmation']
         ]
         print(f"\n[거래량 폭증] {len(rvol_surge)}개 종목 (10일선 위 + 거래량 폭증):")
+        print("-" * 80)
         if len(rvol_surge) > 0:
             for _, stock in rvol_surge.iterrows():
-                print(f"  - {stock['ticker']}: {stock['trend_detail']}, RVOL {stock['rvol']:.1f}배")
+                ticker = stock['ticker']
+                security_name = ticker_names.get(ticker, ticker)
+
+                # 종목명을 30자로 맞춤 (왼쪽 정렬)
+                name_padded = f"{security_name:<30}"
+                trend_info = stock['trend_detail']
+                rvol_str = f"RVOL {stock['rvol']:.1f}배"
+
+                print(f"  {name_padded}  {trend_info}, {rvol_str}, HOLD")
         else:
             print("  없음")
 

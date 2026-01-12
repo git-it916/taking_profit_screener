@@ -4,7 +4,15 @@
 
 ## 프로젝트 개요
 
-**Taking Profit Screener**는 XLSX/CSV 주가 데이터를 분석하여 20일 이동평균선과 상대 거래량(RVOL)을 기반으로 매도 시점을 포착하는 스크리닝 도구입니다.
+**Taking Profit Screener**는 Bloomberg Terminal 또는 XLSX/CSV 주가 데이터를 분석하여 10일 이동평균선과 상대 거래량(RVOL)을 기반으로 매도 시점을 포착하는 스크리닝 도구입니다.
+
+**주요 기능**:
+- Bloomberg Terminal API를 통한 실시간 데이터 분석 (start_bloomberg.py)
+- 로컬 파일(XLSX/CSV) 기반 분석 (start.py)
+- 10일선 추세 분류 (하락세/상승세 구분)
+- RVOL 기반 거래량 분석 (10일 평균 대비)
+- 시각화 히트맵 생성
+- Bloomberg 티커 → 한글 종목명 자동 변환
 
 ## 사용자 요구사항 (개발 순서)
 
@@ -658,12 +666,175 @@ AAPL US Equity   262.36
 2. Bloomberg 로그인 상태
 3. 네트워크 연결
 
+### 16. Bloomberg 티커 → 한글 종목명 자동 변환 (2026-01-08)
+
+**요구사항**:
+> "000990 KS, 007340 KS 이런 티커들을 한글 종목명으로 바꾸는 거거든 혹시 이걸 csv 없이 바로 블룸버그 티커에서 종목명으로 바꿀 수 있는 방법이 있을까?"
+
+**구현 내용**:
+
+#### 1. Bloomberg API 종목명 조회 함수 추가 (`src/bloomberg.py`)
+
+```python
+def get_security_name(ticker: str) -> str:
+    """
+    Bloomberg 티커에서 종목명 조회
+
+    Parameters:
+    -----------
+    ticker : str
+        Bloomberg 티커 (예: "005930 KS", "AAPL US")
+
+    Returns:
+    --------
+    str : 종목명 (예: "Samsung Electronics Co Ltd", "삼성전자")
+    """
+    from xbbg import blp
+
+    # 티커 형식 조정 (Equity 접미사 자동 추가)
+    if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+        ticker = ticker + ' Equity'
+
+    # NAME 필드 조회
+    result = blp.bdp(tickers=ticker, flds='NAME')
+
+    if result is not None and not result.empty:
+        name = result.iloc[0]['NAME']
+        if pd.notna(name):
+            return str(name)
+
+    return ticker.replace(' Equity', '')
+
+def get_multiple_security_names(tickers: List[str]) -> dict:
+    """
+    여러 티커의 종목명을 한번에 조회
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트
+
+    Returns:
+    --------
+    dict : {티커: 종목명} 딕셔너리
+    """
+    from xbbg import blp
+
+    # 티커 형식 조정
+    formatted_tickers = []
+    for ticker in tickers:
+        if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+            formatted_tickers.append(ticker + ' Equity')
+        else:
+            formatted_tickers.append(ticker)
+
+    # 한번에 조회 (효율적)
+    result = blp.bdp(tickers=formatted_tickers, flds='NAME')
+
+    # 티커별 매핑
+    result_dict = {}
+    for i, ticker in enumerate(tickers):
+        formatted_ticker = formatted_tickers[i]
+        if formatted_ticker in result.index:
+            name = result.loc[formatted_ticker, 'NAME']
+            if pd.notna(name):
+                result_dict[ticker] = str(name)
+            else:
+                result_dict[ticker] = ticker
+        else:
+            result_dict[ticker] = ticker
+
+    return result_dict
+```
+
+#### 2. start_bloomberg.py 통합
+
+**티커 입력 후 종목명 조회**:
+```python
+# 티커 리스트 파싱
+tickers = [t.strip() for t in user_input.split(',')]
+print(f"\n입력된 티커: {tickers}")
+
+# 종목명 조회 (Bloomberg API)
+print("\n[종목명 조회 중...]")
+try:
+    ticker_names = get_multiple_security_names(tickers)
+    print("✓ 종목명 조회 완료")
+    print("\n종목 정보:")
+    for ticker in tickers:
+        name = ticker_names.get(ticker, ticker)
+        print(f"  - {ticker}: {name}")
+except Exception as e:
+    print(f"⚠️  종목명 조회 실패 (티커로 표시됩니다): {e}")
+    ticker_names = {ticker: ticker for ticker in tickers}
+```
+
+**요약 테이블에 종목명 표시**:
+```python
+# 종목명 가져오기
+ticker = row['ticker']
+security_name = ticker_names.get(ticker, ticker)
+
+summary_data.append({
+    '종목': security_name,  # 티커 대신 종목명 표시
+    '현재가': f"{row['close_price']:.0f}",
+    '전일비': price_change_str,
+    '10일선': f"{row['ma10']:.0f}",
+    '괴리율': f"{row['ma_distance_percent']:+.1f}%",
+    '추세': row.get('trend_direction', '-'),
+    'RVOL': f"{row['rvol']:.1f}배",
+    '신호': row['signal']
+})
+```
+
+**추세별/조건별 분류에 종목명 표시**:
+```python
+# 하락세 종목 출력
+for _, stock in falling_stocks.iterrows():
+    ticker = stock['ticker']
+    security_name = ticker_names.get(ticker, ticker)
+    trend_info = stock['trend_detail']
+    rvol_info = f"RVOL {stock['rvol']:.1f}배"
+    if stock['condition_2_volume_confirmation']:
+        rvol_info += " [거래량 폭증!]"
+    print(f"  - {security_name} ({ticker}): {trend_info}, {rvol_info}")
+```
+
+**장점**:
+- ✅ **CSV 파일 불필요**: Bloomberg API에서 직접 조회
+- ✅ **한번에 조회**: `get_multiple_security_names()`로 배치 처리
+- ✅ **에러 처리**: 조회 실패 시 티커 그대로 표시
+- ✅ **한글 종목명 지원**: Bloomberg NAME 필드에서 자동 획득
+- ✅ **가독성 향상**: 티커 대신 실제 종목명 표시
+
+**예시 출력**:
+```
+[종목명 조회 중...]
+✓ 종목명 조회 완료
+
+종목 정보:
+  - 000990 KS: DB하이텍
+  - 007340 KS: DN솔루션즈
+  - 005930 KS: Samsung Electronics Co Ltd
+
+================================================================================
+분석 결과 요약
+================================================================================
+
+종목              현재가    전일비   10일선    괴리율   추세    RVOL    신호
+--------------  -------  -------  -------  -------  -----  ------  ------
+DB하이텍          48500    +2.1%    47800    +1.5%   상승세  2.3배   HOLD
+DN솔루션즈        62000    -0.8%    63200    -1.9%   하락세  2.8배   SELL
+Samsung...        75600    +1.2%    74300    +1.8%   상승세  1.5배   HOLD
+```
+
 ## 참고 문서
 
 - [README.md](README.md) - 사용자 가이드
 - [MA_CALCULATION_VERIFICATION.md](MA_CALCULATION_VERIFICATION.md) - MA 계산 검증
 - [src/screener.py](src/screener.py) - 핵심 계산 로직
 - [src/analyzer.py](src/analyzer.py) - 분석 및 리포트 생성
+- [src/bloomberg.py](src/bloomberg.py) - Bloomberg API 연동
 
 ## 연락처
 
