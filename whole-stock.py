@@ -1,10 +1,10 @@
 """
-Taking Profit Screener - 전종목 분석 (코스피 + 코스닥)
+Taking Profit Screener - 거래량 폭증 종목 스크리닝
 
 py -3.12 whole-stock.py
 
 Bloomberg Terminal에서 전종목 데이터를 받아 분석합니다.
-10일선 위 + RVOL≥1.3 종목만 필터링하여 표시합니다.
+"거래량 폭증" 종목만 필터링: 10일선 돌파 + RVOL≥1.5
 """
 import os
 import sys
@@ -25,8 +25,7 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 from src import StockAnalyzer
-from src.bloomberg import download_bloomberg_data, get_multiple_security_names
-from src.visualizer import create_trend_heatmap
+from src.bloomberg import download_bloomberg_data, get_multiple_security_names, get_market_caps
 
 
 def get_tickers_from_excel(file_path: str) -> list:
@@ -121,7 +120,7 @@ def get_tickers_from_excel(file_path: str) -> list:
         return []
 
 
-def analyze_from_bloomberg(ticker: str, period: str = '2M') -> dict:
+def analyze_from_bloomberg(ticker: str, period: str = '3M') -> dict:
     """
     Bloomberg에서 데이터를 받아 분석
 
@@ -130,7 +129,7 @@ def analyze_from_bloomberg(ticker: str, period: str = '2M') -> dict:
     ticker : str
         Bloomberg 티커
     period : str
-        데이터 기간 (기본값: '2M' - 2개월)
+        데이터 기간 (기본값: '3M' - 3개월)
 
     Returns:
     --------
@@ -143,6 +142,34 @@ def analyze_from_bloomberg(ticker: str, period: str = '2M') -> dict:
         if df is None or len(df) == 0:
             return None
 
+        # ================================================================
+        # 당일 데이터 제외 (장중에만 - 마감 후에는 포함)
+        # ================================================================
+        from datetime import datetime as dt, time
+        now = dt.now()
+        today = now.date()
+        current_time = now.time()
+
+        # 한국 시장 마감 시간: 오후 3시 30분
+        market_close_time = time(15, 30)
+
+        # Date 컬럼을 datetime으로 변환
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df['date_only'] = df['Date'].dt.date
+
+            # 장중(마감 전)에만 당일 데이터 제외
+            if current_time < market_close_time:
+                # 당일 데이터가 있으면 제외 (일봉 미완성)
+                if (df['date_only'] == today).any():
+                    df = df[df['date_only'] != today].copy()
+
+            # 임시 컬럼 제거
+            df = df.drop(columns=['date_only'])
+
+        if len(df) == 0:
+            return None
+
         # 상세 분석
         analyzer = StockAnalyzer()
         result = analyzer.analyze_latest(df, ticker)
@@ -153,9 +180,9 @@ def analyze_from_bloomberg(ticker: str, period: str = '2M') -> dict:
         return None
 
 
-def analyze_tickers_batch(tickers: list, period: str = '2M', batch_size: int = 50) -> list:
+def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int = 3) -> list:
     """
-    배치 방식으로 여러 티커 분석 (Bloomberg API 효율적 사용)
+    병렬 방식으로 여러 티커 분석 (Bloomberg API 병렬 호출)
 
     Parameters:
     -----------
@@ -163,63 +190,94 @@ def analyze_tickers_batch(tickers: list, period: str = '2M', batch_size: int = 5
         분석할 티커 리스트
     period : str
         데이터 기간
-    batch_size : int
-        배치 크기 (기본값: 50)
+    max_workers : int
+        동시 실행 worker 수 (기본값: 3 - 안전한 수준)
 
     Returns:
     --------
     list : 분석 결과 리스트
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Lock
+
     results = []
-    failed_count = 0
+    failed_tickers = []
+    completed_count = 0
+    lock = Lock()
 
     print(f"\n총 {len(tickers)}개 종목 분석 시작...")
-    print(f"배치 크기: {batch_size}개씩 처리")
-    print(f"진행 상황은 10개마다 표시됩니다.\n")
+    print(f"병렬 처리: {max_workers}개 동시 실행")
+    print(f"⚠️  Bloomberg API 안정성을 위해 {max_workers}개씩 처리합니다.\n")
 
     start_time = datetime.now()
 
-    for i, ticker in enumerate(tickers, 1):
-        result = analyze_from_bloomberg(ticker, period=period)
+    def analyze_single(ticker):
+        """단일 티커 분석 (worker thread에서 실행)"""
+        try:
+            result = analyze_from_bloomberg(ticker, period=period)
+            return (ticker, result, None)
+        except Exception as e:
+            return (ticker, None, str(e))
 
-        if result:
-            results.append(result)
-        else:
-            failed_count += 1
+    # ThreadPoolExecutor로 병렬 처리
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 모든 작업 제출
+        future_to_ticker = {executor.submit(analyze_single, ticker): ticker
+                           for ticker in tickers}
 
-        # 진행 상황 표시 (10개마다)
-        if i % 10 == 0 or i == len(tickers):
-            elapsed = datetime.now() - start_time
-            progress = i / len(tickers) * 100
-            rate = i / elapsed.total_seconds() if elapsed.total_seconds() > 0 else 0
-            remaining = (len(tickers) - i) / rate if rate > 0 else 0
+        # 완료되는 대로 처리
+        for future in as_completed(future_to_ticker):
+            ticker, result, error = future.result()
 
-            # 한 줄로 출력 (이전 줄 덮어쓰기)
-            print(f"\r[진행중] {i}/{len(tickers)} ({progress:.1f}%) "
-                  f"| 경과: {str(elapsed).split('.')[0]} | 속도: {rate:.2f}종목/초 | "
-                  f"남은시간: ~{int(remaining/60)}분 {int(remaining%60)}초", end='', flush=True)
+            with lock:
+                completed_count += 1
+
+                if result:
+                    results.append(result)
+                else:
+                    failed_tickers.append(ticker)
+
+                # 진행 상황 표시
+                elapsed = datetime.now() - start_time
+                progress = completed_count / len(tickers) * 100
+                rate = completed_count / elapsed.total_seconds() if elapsed.total_seconds() > 0 else 0
+                remaining = (len(tickers) - completed_count) / rate if rate > 0 else 0
+
+                # 한 줄로 출력 (이전 줄 덮어쓰기)
+                print(f"\r[진행중] {completed_count}/{len(tickers)} ({progress:.1f}%) "
+                      f"| 경과: {str(elapsed).split('.')[0]} | 속도: {rate:.2f}종목/초 | "
+                      f"남은시간: ~{int(remaining/60)}분 {int(remaining%60)}초", end='', flush=True)
 
     print()  # 줄바꿈
     total_time = datetime.now() - start_time
 
-    print(f"\n분석 완료 - 소요시간: {str(total_time).split('.')[0]}")
-    print(f"성공: {len(results)}개, 실패: {failed_count}개")
+    print(f"\n✓ 분석 완료 - 소요시간: {str(total_time).split('.')[0]}")
+    print(f"  성공: {len(results)}개, 실패: {len(failed_tickers)}개")
+
+    if failed_tickers:
+        print(f"\n⚠️  실패한 종목 ({len(failed_tickers)}개):")
+        for ticker in failed_tickers[:10]:  # 처음 10개만 표시
+            print(f"  - {ticker}")
+        if len(failed_tickers) > 10:
+            print(f"  ... 외 {len(failed_tickers) - 10}개")
 
     return results
 
 
-def filter_recent_breakout_stocks(results: list, days: int = 5, rvol_threshold: float = 1.3) -> pd.DataFrame:
+def filter_volume_surge_breakout(results: list, rvol_threshold: float = 1.5) -> pd.DataFrame:
     """
-    10일선 위 + RVOL≥threshold 종목 필터링
+    거래량 폭증 종목 필터링: 10일선 돌파 + RVOL≥1.5
+
+    조건:
+    - condition_1_trend_breakdown = False (10일선 위)
+    - condition_2_volume_confirmation = True (RVOL >= 1.5)
 
     Parameters:
     -----------
     results : list
         분석 결과 리스트
-    days : int
-        (사용 안 함, 하위 호환성 유지)
     rvol_threshold : float
-        RVOL 최소 기준 (기본값: 1.3)
+        RVOL 최소 기준 (기본값: 1.5)
 
     Returns:
     --------
@@ -230,17 +288,40 @@ def filter_recent_breakout_stocks(results: list, days: int = 5, rvol_threshold: 
 
     df = pd.DataFrame(results)
 
-    # 조건 1: 현재 10일선 위에 있음 (상승세)
-    condition_above = df['current_position'] == 'above'
+    # 거래량 폭증 조건 (start_bloomberg.py와 동일)
+    # - 10일선 위 (condition_1_trend_breakdown = False)
+    # - 거래량 폭증 (condition_2_volume_confirmation = True)
+    condition_surge = (
+        ~df['condition_1_trend_breakdown'] &
+        df['condition_2_volume_confirmation']
+    )
 
-    # 조건 2: RVOL >= threshold (거래량 증가)
-    condition_rvol = df['rvol'] >= rvol_threshold
+    # 필터링
+    filtered = df[condition_surge].copy()
 
-    # 두 조건을 만족하는 종목 필터링
-    filtered = df[condition_above & condition_rvol].copy()
+    # trend_detail에서 10일선 위 날짜 추출하여 정렬 (최근 날짜가 위로)
+    # 형식: "10일선 아래(2026-01-08) → 10일선 위(2026-01-13)"
+    import re
 
-    # RVOL 기준 내림차순 정렬
-    filtered = filtered.sort_values('rvol', ascending=False)
+    def extract_crossover_date(trend_detail):
+        """10일선 위 날짜를 추출 (10일선 돌파 날짜)"""
+        if pd.isna(trend_detail):
+            return None
+        # "10일선 위(YYYY-MM-DD)" 패턴 추출
+        match = re.search(r'10일선 위\((\d{4}-\d{2}-\d{2})\)', trend_detail)
+        if match:
+            return pd.to_datetime(match.group(1))
+        return None
+
+    # 10일선 돌파 날짜 추출
+    filtered['crossover_date'] = filtered['trend_detail'].apply(extract_crossover_date)
+
+    # 10일선 돌파 날짜 기준 내림차순 정렬 (최근 날짜가 위로)
+    # 날짜가 없는 경우 맨 아래로
+    filtered = filtered.sort_values('crossover_date', ascending=False, na_position='last')
+
+    # 임시 컬럼 제거
+    filtered = filtered.drop(columns=['crossover_date'])
 
     return filtered
 
@@ -248,13 +329,16 @@ def filter_recent_breakout_stocks(results: list, days: int = 5, rvol_threshold: 
 def main():
     """메인 함수"""
     print("="*80)
-    print("TAKING PROFIT SCREENER - 전종목 분석 (코스피 + 코스닥)")
+    print("TAKING PROFIT SCREENER - 거래량 폭증 종목 스크리닝")
     print("="*80)
 
     print("\n⚠️  주의사항:")
     print("  1. Bloomberg Terminal이 실행 중이어야 합니다")
     print("  2. Bloomberg에 로그인되어 있어야 합니다")
-    print("  3. 전종목 분석은 약 10~15분 소요됩니다 (1개월 데이터)")
+    print("  3. 전종목 분석은 약 10~15분 소요됩니다 (3개월 데이터)")
+    print("\n📊 스크리닝 조건:")
+    print("  - 10일선 돌파 (10일선 위)")
+    print("  - 거래량 폭증 (RVOL ≥ 1.5배)")
 
     # ====================================================================
     # 엑셀 파일에서 티커 로드
@@ -297,26 +381,26 @@ def main():
         return
 
     # ====================================================================
-    # 전종목 분석 실행 (순차 처리)
+    # 전종목 분석 실행 (병렬 처리)
     # ====================================================================
     print("\n" + "="*80)
-    print("전종목 분석 시작 (1개월 데이터)")
+    print("전종목 분석 시작 (3개월 데이터)")
     print("="*80)
 
-    results = analyze_tickers_batch(all_tickers, period='1M')
+    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=10)
 
     if not results:
         print("\n[에러] 분석 결과가 없습니다")
         return
 
     # ====================================================================
-    # 필터링: 10일선 위 + RVOL≥1.3
+    # 필터링: 거래량 폭증 (10일선 돌파 + RVOL≥1.5)
     # ====================================================================
     print("\n" + "="*80)
-    print("스크리닝: 10일선 위 + RVOL≥1.3 종목")
+    print("스크리닝: 거래량 폭증 종목 (10일선 돌파 + RVOL≥1.5)")
     print("="*80)
 
-    filtered_df = filter_recent_breakout_stocks(results, rvol_threshold=1.3)
+    filtered_df = filter_volume_surge_breakout(results, rvol_threshold=1.5)
 
     if filtered_df.empty:
         print("\n조건을 만족하는 종목이 없습니다.")
@@ -325,7 +409,7 @@ def main():
     print(f"\n✓ {len(filtered_df)}개 종목이 조건을 만족합니다")
 
     # ====================================================================
-    # 종목명 조회
+    # 종목명 및 시가총액 조회
     # ====================================================================
     print("\n[종목명 조회 중...]")
     filtered_tickers = filtered_df['ticker'].tolist()
@@ -335,6 +419,13 @@ def main():
     except Exception as e:
         print(f"⚠️  종목명 조회 실패: {e}")
         ticker_names = {ticker: ticker for ticker in filtered_tickers}
+
+    print("\n[시가총액 조회 중...]")
+    try:
+        market_caps = get_market_caps(filtered_tickers)
+    except Exception as e:
+        print(f"⚠️  시가총액 조회 실패: {e}")
+        market_caps = {ticker: None for ticker in filtered_tickers}
 
     # ====================================================================
     # 결과 출력
@@ -375,113 +466,130 @@ def main():
     # 상세 정보 출력
     # ====================================================================
     print("\n" + "="*80)
-    print("상세 정보")
+    print("상세 정보 (거래량 폭증 종목)")
     print("="*80)
 
     for _, row in filtered_df.iterrows():
         ticker = row['ticker']
         security_name = ticker_names.get(ticker, ticker)
+        market_cap = market_caps.get(ticker)
 
-        name_padded = f"{security_name:<30}"
+        # 한글 종목명은 15자로 제한 (한글 2바이트 고려)
+        # 영문 종목명은 30자로 제한
+        if any('\uac00' <= char <= '\ud7a3' for char in security_name):
+            # 한글이 포함된 경우
+            name_padded = f"{security_name:<15}"
+        else:
+            # 영문인 경우
+            name_padded = f"{security_name:<30}"
+
         trend_info = row['trend_detail']
         rvol_str = f"RVOL {row['rvol']:.1f}배"
 
-        print(f"  {name_padded}  {trend_info}, {rvol_str}")
+        # 시가총액 포맷팅 (Bloomberg 원본 포맷)
+        if market_cap is not None:
+            market_cap_str = f"시총 {market_cap}"
+        else:
+            market_cap_str = "시총 N/A"
+
+        print(f"  {name_padded}  {trend_info}, {rvol_str}, {market_cap_str}, WATCH")
 
     # ====================================================================
-    # CSV 저장 (선택)
-    # ====================================================================
-    print("\n" + "="*80)
-    save_choice = input("\n결과를 CSV로 저장하시겠습니까? (y/n): ").strip().lower()
-
-    if save_choice == 'y':
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"전종목_스크리닝_{timestamp}.csv"
-
-        # 저장용 DataFrame 생성
-        save_df = filtered_df[[
-            'ticker', 'close_price', 'prev_close', 'price_change_percent',
-            'ma10', 'ma_distance_percent', 'rvol',
-            'last_break_above', 'last_break_below',
-            'trend_direction', 'trend_detail', 'signal'
-        ]].copy()
-
-        # 종목명 추가
-        save_df.insert(0, 'security_name', save_df['ticker'].map(ticker_names))
-
-        save_df.to_csv(output_filename, index=False, encoding='utf-8-sig')
-        print(f"\n[저장 완료] {output_filename}")
-
-    # ====================================================================
-    # 시각화 저장 (선택)
+    # TOP 5 출력 (10일선 돌파일 & 이탈일 기준)
     # ====================================================================
     print("\n" + "="*80)
-    viz_choice = input("\n분석 결과를 히트맵으로 저장하시겠습니까? (y/n): ").strip().lower()
-
-    if viz_choice == 'y':
-        try:
-            print("\n[시각화 생성 중...]")
-            saved_path = create_trend_heatmap(filtered_df.to_dict('records'))
-            print(f"✓ 히트맵 저장 완료: {saved_path}")
-        except Exception as e:
-            print(f"✗ 시각화 생성 실패: {e}")
-            import traceback
-            traceback.print_exc()
-
-    # ====================================================================
-    # 조건별 맞춤 필터링 (자동 실행)
-    # ====================================================================
-    print("\n" + "="*80)
-    print("조건별 맞춤 필터링")
-    print("="*80)
-    print(f"\n현재 필터링된 종목 (10일선 위 + RVOL≥1.3): {len(filtered_df)}개")
-    print(f"전체 분석 성공한 종목: {len(results)}개")
-
-    all_results_df = pd.DataFrame(results)
-
-    print("\n1. RVOL 최소값을 입력하세요 (예: 1.3)")
-    rvol_min_input = input("   RVOL ≥ ").strip()
-    rvol_min = float(rvol_min_input) if rvol_min_input else 1.3
-
-    print("\n2. 10일선 위치를 선택하세요")
-    print("   1: 10일선 위만")
-    print("   2: 10일선 아래만")
-    print("   3: 전체")
-    position_choice = input("   선택 (1-3): ").strip()
-
-    # 필터링
-    filtered = all_results_df[all_results_df['rvol'] >= rvol_min]
-
-    if position_choice == '1':
-        filtered = filtered[filtered['current_position'] == 'above']
-        position_desc = "10일선 위"
-    elif position_choice == '2':
-        filtered = filtered[filtered['current_position'] == 'below']
-        position_desc = "10일선 아래"
-    else:
-        position_desc = "전체"
-
-    filtered = filtered.sort_values('rvol', ascending=False)
-
-    print(f"\n[필터링 결과] {len(filtered)}개 종목 (RVOL ≥ {rvol_min}, {position_desc})")
+    print("TOP 5 종목 (10일선 돌파일 최근순)")
     print("="*80)
 
-    for idx, (_, row) in enumerate(filtered.iterrows(), 1):
+    # 10일선 돌파일 내림차순 정렬 (최근이 먼저)
+    top5_breakout = filtered_df.sort_values('last_ma10_break_above', ascending=False, na_position='last').head(5)
+
+    for idx, row in top5_breakout.iterrows():
         ticker = row['ticker']
-        rvol = row['rvol']
-        position = "↑10일선위" if row['current_position'] == 'above' else "↓10일선아래"
-        ma_dist = row['ma_distance_percent']
-        close = row['close_price']
-        print(f"  {idx:3d}. {ticker:12s}  {position}  현재가: {close:8.0f}  괴리율: {ma_dist:+6.1f}%  RVOL: {rvol:5.1f}배")
+        name = ticker_names.get(ticker, ticker)
+        market_cap = market_caps.get(ticker)
 
-    # CSV 저장 옵션
+        # 시가총액 포맷 (Bloomberg 원본)
+        cap_str = market_cap if market_cap is not None else "N/A"
+
+        print(f"  {name:<15} | 돌파일: {row['last_ma10_break_above']} | RVOL: {row['rvol']:.1f}배 | 시총: {cap_str}")
+
     print("\n" + "="*80)
-    save_custom = input("\n이 결과를 CSV로 저장하시겠습니까? (y/n): ").strip().lower()
-    if save_custom == 'y':
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"맞춤필터_RVOL{rvol_min}_{position_desc}_{timestamp}.csv"
-        filtered.to_csv(filename, index=False, encoding='utf-8-sig')
-        print(f"✓ 저장 완료: {filename}")
+    print("TOP 5 종목 (10일선 이탈일 오래된순)")
+    print("="*80)
+
+    # 10일선 이탈일 오름차순 정렬 (오래된 것이 먼저)
+    top5_breakdown = filtered_df.sort_values('last_ma10_break_below', ascending=True, na_position='last').head(5)
+
+    for idx, row in top5_breakdown.iterrows():
+        ticker = row['ticker']
+        name = ticker_names.get(ticker, ticker)
+        market_cap = market_caps.get(ticker)
+
+        # 시가총액 포맷 (Bloomberg 원본)
+        cap_str = market_cap if market_cap is not None else "N/A"
+
+        print(f"  {name:<15} | 이탈일: {row['last_ma10_break_below']} | RVOL: {row['rvol']:.1f}배 | 시총: {cap_str}")
+
+    # ====================================================================
+    # 엑셀 저장 (자동)
+    # ====================================================================
+    print("\n" + "="*80)
+    print("엑셀 파일 저장 중...")
+
+    # 저장 디렉토리 생성
+    save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\whole-stock-result"
+    os.makedirs(save_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = os.path.join(save_dir, f"전종목_스크리닝_{timestamp}.xlsx")
+
+    # 저장용 DataFrame 생성 (추세방향, 신호 제외)
+    save_df = filtered_df[[
+        'ticker', 'rvol',
+        'last_ma10_break_above', 'last_ma10_break_below',
+        'trend_detail',
+        'close_price', 'prev_close', 'price_change_percent',
+        'ma10', 'ma_distance_percent'
+    ]].copy()
+
+    # 종목명과 시가총액 추가
+    save_df.insert(0, '종목명', save_df['ticker'].map(ticker_names))
+    save_df.insert(1, '티커', save_df['ticker'])
+    save_df = save_df.drop(columns=['ticker'])
+
+    # 시가총액 추가 (Bloomberg 원본 포맷)
+    save_df.insert(2, '시가총액', save_df['티커'].map(market_caps))
+
+    # 소수점 반올림 (전일비, 10일선괴리율, RVOL)
+    save_df['price_change_percent'] = save_df['price_change_percent'].round(1)
+    save_df['ma_distance_percent'] = save_df['ma_distance_percent'].round(1)
+    save_df['rvol'] = save_df['rvol'].round(1)
+
+    # 컬럼명 한글화
+    save_df = save_df.rename(columns={
+        'rvol': 'RVOL',
+        'last_ma10_break_above': '10일선돌파일',
+        'last_ma10_break_below': '10일선이탈일',
+        'trend_detail': '추세상세',
+        'close_price': '현재가',
+        'prev_close': '전일종가',
+        'price_change_percent': '전일비(%)',
+        'ma10': '10일선',
+        'ma_distance_percent': '10일선괴리율(%)'
+    })
+
+    # 정렬: 10일선 돌파일 내림차순 (최근 먼저) → 10일선 이탈일 오름차순 (오래된 먼저)
+    save_df = save_df.sort_values(
+        by=['10일선돌파일', '10일선이탈일'],
+        ascending=[False, True],
+        na_position='last'
+    )
+
+    # 엑셀로 저장
+    save_df.to_excel(output_filename, index=False, engine='openpyxl')
+    print(f"\n[저장 완료] {output_filename}")
+
 
 
 if __name__ == "__main__":

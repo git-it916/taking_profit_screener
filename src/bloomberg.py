@@ -47,10 +47,13 @@ def download_bloomberg_data(
         기본값: 오늘
     period : str
         데이터 기간 (start_date 미지정시)
+        - '3Y': 3년
+        - '2Y': 2년
         - '1Y': 1년
         - '6M': 6개월
         - '3M': 3개월
-        기본값: '1Y'
+        - '1M': 1개월
+        기본값: '3Y'
 
     Returns:
     --------
@@ -86,15 +89,21 @@ def download_bloomberg_data(
         # period에 따라 시작 날짜 계산
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
 
-        if period == '1Y':
+        if period == '3Y':
+            start_dt = end_dt - timedelta(days=1095)  # 3년
+        elif period == '2Y':
+            start_dt = end_dt - timedelta(days=730)  # 2년
+        elif period == '1Y':
             start_dt = end_dt - timedelta(days=365)
         elif period == '6M':
             start_dt = end_dt - timedelta(days=180)
         elif period == '3M':
             start_dt = end_dt - timedelta(days=90)
+        elif period == '1M':
+            start_dt = end_dt - timedelta(days=30)
         else:
-            # 기본값: 1년
-            start_dt = end_dt - timedelta(days=365)
+            # 기본값: 3년
+            start_dt = end_dt - timedelta(days=1095)
 
         start_date = start_dt.strftime('%Y-%m-%d')
 
@@ -202,9 +211,125 @@ def get_security_name(ticker: str) -> str:
         return ticker.replace(' Equity', '')
 
 
+def get_market_caps(tickers: List[str]) -> dict:
+    """
+    여러 티커의 시가총액을 한번에 조회
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트
+
+    Returns:
+    --------
+    dict : {티커: 시가총액 문자열} 딕셔너리 (예: "1000.0B", "50.0M")
+    """
+    try:
+        from xbbg import blp
+    except ImportError:
+        return {ticker: None for ticker in tickers}
+
+    result_dict = {}
+
+    try:
+        # 티커 형식 조정
+        formatted_tickers = []
+        original_map = {}
+
+        for ticker in tickers:
+            if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+                formatted = ticker + ' Equity'
+            else:
+                formatted = ticker
+            formatted_tickers.append(formatted)
+            original_map[formatted] = ticker
+
+        # CUR_MKT_CAP 필드로 시가총액 조회 (Bloomberg 원본 포맷)
+        try:
+            result = blp.bdp(tickers=formatted_tickers, flds='CUR_MKT_CAP')
+
+            if result is not None and not result.empty:
+                # 컬럼명 찾기
+                column_name = None
+                for col in result.columns:
+                    if col.upper() == 'CUR_MKT_CAP':
+                        column_name = col
+                        break
+
+                if column_name:
+                    # 결과 매핑 (Bloomberg 원본 그대로 반환)
+                    for formatted_ticker, original_ticker in original_map.items():
+                        try:
+                            if formatted_ticker in result.index:
+                                market_cap = result.loc[formatted_ticker, column_name]
+                                if pd.notna(market_cap):
+                                    # 그대로 문자열로 변환 (Bloomberg 원본 포맷 유지)
+                                    result_dict[original_ticker] = str(market_cap)
+                                else:
+                                    result_dict[original_ticker] = None
+                            else:
+                                result_dict[original_ticker] = None
+                        except Exception:
+                            result_dict[original_ticker] = None
+                else:
+                    result_dict = {ticker: None for ticker in tickers}
+            else:
+                result_dict = {ticker: None for ticker in tickers}
+
+        except Exception:
+            result_dict = {ticker: None for ticker in tickers}
+
+    except Exception:
+        result_dict = {ticker: None for ticker in tickers}
+
+    return result_dict
+
+
+def get_korean_stock_names(tickers: List[str]) -> dict:
+    """
+    FinanceDataReader를 사용하여 한국 주식 한글명 조회
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트 (예: "005930 KS")
+
+    Returns:
+    --------
+    dict : {티커: 한글명} 딕셔너리
+    """
+    try:
+        import FinanceDataReader as fdr
+    except ImportError:
+        return {}
+
+    result_dict = {}
+
+    try:
+        # KRX 전체 종목 리스트 가져오기 (한글명 포함)
+        krx_stocks = fdr.StockListing('KRX')
+
+        # 종목코드-종목명 매핑 생성
+        code_to_name = dict(zip(krx_stocks['Code'], krx_stocks['Name']))
+
+        # 각 티커에서 종목코드 추출하여 한글명 매칭
+        for ticker in tickers:
+            # "005930 KS" -> "005930"
+            if ' ' in ticker:
+                code = ticker.split()[0]
+                # 한글명 조회
+                if code in code_to_name:
+                    result_dict[ticker] = code_to_name[code]
+
+        return result_dict
+
+    except Exception:
+        return {}
+
+
 def get_multiple_security_names(tickers: List[str]) -> dict:
     """
-    여러 티커의 종목명을 한번에 조회
+    여러 티커의 종목명을 한번에 조회 (한글명 우선, 실패시 영문명)
 
     Parameters:
     -----------
@@ -215,20 +340,33 @@ def get_multiple_security_names(tickers: List[str]) -> dict:
     --------
     dict : {티커: 종목명} 딕셔너리
     """
+    # 1단계: 한국 주식 한글명 조회 시도
+    korean_names = get_korean_stock_names(tickers)
+
+    # 2단계: 한글명을 찾지 못한 티커는 Bloomberg에서 영문명 조회
+    remaining_tickers = [t for t in tickers if t not in korean_names]
+
+    if not remaining_tickers:
+        return korean_names
+
     try:
         from xbbg import blp
     except ImportError:
         print("  xbbg 라이브러리가 없습니다.")
-        return {ticker: ticker for ticker in tickers}
+        # 한글명과 티커만 반환
+        for ticker in remaining_tickers:
+            korean_names[ticker] = ticker
+        return korean_names
 
-    result_dict = {}
+    # 한글명으로 시작
+    result_dict = korean_names.copy()
 
     try:
-        # 티커 형식 조정
+        # remaining_tickers만 Bloomberg에서 조회
         formatted_tickers = []
         original_map = {}  # formatted -> original 매핑
 
-        for ticker in tickers:
+        for ticker in remaining_tickers:
             if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
                 formatted = ticker + ' Equity'
             else:
@@ -236,16 +374,14 @@ def get_multiple_security_names(tickers: List[str]) -> dict:
             formatted_tickers.append(formatted)
             original_map[formatted] = ticker
 
-        print(f"  조회 중: {formatted_tickers[:3]}{'...' if len(formatted_tickers) > 3 else ''}")
+        if formatted_tickers:
+            print(f"  Bloomberg 영문명 조회 중: {formatted_tickers[:3]}{'...' if len(formatted_tickers) > 3 else ''}")
 
-        # NAME 필드로 종목명 조회
-        # 주의: Bloomberg는 영문 회사명만 제공 (한글명 없음)
+        # NAME 필드로 종목명 조회 (영문명)
         try:
             result = blp.bdp(tickers=formatted_tickers, flds='NAME')
 
             if result is not None and not result.empty:
-                # Bloomberg는 컬럼명을 소문자로 반환 ('name')
-                # 대소문자 무관하게 처리
                 column_name = None
                 for col in result.columns:
                     if col.upper() == 'NAME':
@@ -253,9 +389,10 @@ def get_multiple_security_names(tickers: List[str]) -> dict:
                         break
 
                 if column_name and result[column_name].notna().any():
-                    print(f"  ✓ 종목명 조회 성공 (영문명)")
+                    if formatted_tickers:
+                        print(f"  ✓ 종목명 조회 성공 (영문명)")
 
-                    # 결과 매핑
+                    # 결과 매핑 (remaining_tickers만)
                     for formatted_ticker, original_ticker in original_map.items():
                         try:
                             if formatted_ticker in result.index:
@@ -270,20 +407,24 @@ def get_multiple_security_names(tickers: List[str]) -> dict:
                             result_dict[original_ticker] = original_ticker
                 else:
                     print(f"  ⚠️  NAME 컬럼을 찾을 수 없습니다.")
-                    result_dict = {ticker: ticker for ticker in tickers}
+                    for ticker in remaining_tickers:
+                        result_dict[ticker] = ticker
             else:
                 print(f"  ⚠️  Bloomberg에서 데이터를 가져올 수 없습니다.")
-                result_dict = {ticker: ticker for ticker in tickers}
+                for ticker in remaining_tickers:
+                    result_dict[ticker] = ticker
 
         except Exception as e:
             print(f"  ✗ 조회 실패: {e}")
-            result_dict = {ticker: ticker for ticker in tickers}
+            for ticker in remaining_tickers:
+                result_dict[ticker] = ticker
 
     except Exception as e:
         print(f"  ✗ 종목명 조회 실패: {e}")
         import traceback
         traceback.print_exc()
-        result_dict = {ticker: ticker for ticker in tickers}
+        for ticker in remaining_tickers:
+            result_dict[ticker] = ticker
 
     return result_dict
 

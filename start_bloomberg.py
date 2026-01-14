@@ -28,7 +28,7 @@ from src.bloomberg import download_bloomberg_data, get_multiple_security_names
 from src.visualizer import create_trend_heatmap
 
 
-def analyze_from_bloomberg(ticker: str, period: str = '1Y', show_progress: bool = True) -> dict:
+def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool = True) -> dict:
     """
     Bloomberg에서 데이터를 받아 분석
 
@@ -37,7 +37,7 @@ def analyze_from_bloomberg(ticker: str, period: str = '1Y', show_progress: bool 
     ticker : str
         Bloomberg 티커 (예: "005930 KS")
     period : str
-        데이터 기간 (기본값: '1Y')
+        데이터 기간 (기본값: '1M')
     show_progress : bool
         진행 상황 표시 여부 (기본값: True)
 
@@ -52,6 +52,27 @@ def analyze_from_bloomberg(ticker: str, period: str = '1Y', show_progress: bool 
         df = download_bloomberg_data(ticker, period=period, verbose=show_progress)
 
         if df is None or len(df) == 0:
+            return None
+
+        # ================================================================
+        # [1-1단계] 당일 데이터 제외 (일봉 미완성 가능성)
+        # ================================================================
+        from datetime import datetime as dt
+        today = dt.now().date()
+
+        # Date 컬럼을 datetime으로 변환
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df['date_only'] = df['Date'].dt.date
+
+            # 당일 데이터가 있으면 제외 (일봉 미완성)
+            if (df['date_only'] == today).any():
+                df = df[df['date_only'] != today].copy()
+
+            # 임시 컬럼 제거
+            df = df.drop(columns=['date_only'])
+
+        if len(df) == 0:
             return None
 
         # ================================================================
@@ -115,21 +136,10 @@ def main():
             ticker_names = {ticker: ticker for ticker in tickers}
 
         # ================================================================
-        # 데이터 기간 입력
+        # 데이터 기간 설정 (3개월 고정)
         # ================================================================
-        print("\n데이터 기간을 선택하세요:")
-        print("  1: 1년 (기본값)")
-        print("  2: 6개월")
-        print("  3: 3개월")
-
-        period_choice = input("\n선택 (엔터=1년): ").strip()
-
-        if period_choice == '2':
-            period = '6M'
-        elif period_choice == '3':
-            period = '3M'
-        else:
-            period = '1Y'
+        period = '3M'
+        print(f"\n데이터 기간: 최근 3개월")
 
         # ================================================================
         # 분석 실행 (진행 상황 표시)
@@ -315,7 +325,7 @@ def main():
                 trend_info = stock['trend_detail']
                 rvol_str = f"RVOL {stock['rvol']:.1f}배"
 
-                print(f"  {name_padded}  {trend_info}, {rvol_str}, HOLD")
+                print(f"  {name_padded}  {trend_info}, {rvol_str}, WATCH")
         else:
             print("  없음")
 
@@ -336,15 +346,110 @@ def main():
                 traceback.print_exc()
 
         # ================================================================
-        # CSV 저장 (선택)
+        # Excel 저장 (조건별 분류만)
         # ================================================================
         print("\n" + "="*80)
-        save_choice = input("\n전체 결과를 CSV로 저장하시겠습니까? (y/n): ").strip().lower()
+        save_choice = input("\n조건별 분류 결과를 Excel로 저장하시겠습니까? (y/n): ").strip().lower()
 
         if save_choice == 'y':
-            output_filename = "블룸버그_분석결과.csv"
-            results_df.to_csv(output_filename, index=False, encoding='utf-8-sig')
-            print(f"\n[저장 완료] {output_filename}")
+            import os
+            from datetime import datetime as dt
+
+            # 저장 경로 생성
+            output_dir = r"C:\Users\Bloomberg\Documents\ssh_project\start-bloomberg-result"
+            os.makedirs(output_dir, exist_ok=True)
+
+            # 파일명에 타임스탬프 추가
+            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"조건별_분류_{timestamp}.xlsx"
+            output_path = os.path.join(output_dir, output_filename)
+
+            # ====================================================================
+            # 3가지 카테고리별로 데이터 생성
+            # ====================================================================
+
+            # [1] 강력 매도 신호 (10일선 하회 + 거래량 폭증)
+            sell_stocks = results_df[results_df['signal'] == 'SELL']
+            sell_data = []
+            for _, stock in sell_stocks.iterrows():
+                ticker = stock['ticker']
+                security_name = ticker_names.get(ticker, ticker)
+                sell_data.append({
+                    '카테고리': '강력 매도 신호',
+                    '티커': ticker,
+                    '종목명': security_name,
+                    '추세정보': stock['trend_detail'],
+                    'RVOL': f"{stock['rvol']:.1f}배",
+                    '신호': 'SELL',
+                    '현재가': stock['close_price'],
+                    '10일선': stock['ma10'],
+                    '괴리율': f"{stock['ma_distance_percent']:+.1f}%"
+                })
+
+            # [2] 주의 필요 (10일선 하회 + 거래량 부족)
+            caution = results_df[
+                results_df['condition_1_trend_breakdown'] &
+                ~results_df['condition_2_volume_confirmation']
+            ]
+            caution_data = []
+            for _, stock in caution.iterrows():
+                ticker = stock['ticker']
+                security_name = ticker_names.get(ticker, ticker)
+                caution_data.append({
+                    '카테고리': '주의 필요',
+                    '티커': ticker,
+                    '종목명': security_name,
+                    '추세정보': stock['trend_detail'],
+                    'RVOL': f"{stock['rvol']:.1f}배",
+                    '신호': 'HOLD',
+                    '현재가': stock['close_price'],
+                    '10일선': stock['ma10'],
+                    '괴리율': f"{stock['ma_distance_percent']:+.1f}%"
+                })
+
+            # [3] 거래량 폭증 (10일선 위 + 거래량 폭증)
+            rvol_surge = results_df[
+                ~results_df['condition_1_trend_breakdown'] &
+                results_df['condition_2_volume_confirmation']
+            ]
+            surge_data = []
+            for _, stock in rvol_surge.iterrows():
+                ticker = stock['ticker']
+                security_name = ticker_names.get(ticker, ticker)
+                surge_data.append({
+                    '카테고리': '거래량 폭증',
+                    '티커': ticker,
+                    '종목명': security_name,
+                    '추세정보': stock['trend_detail'],
+                    'RVOL': f"{stock['rvol']:.1f}배",
+                    '신호': 'WATCH',
+                    '현재가': stock['close_price'],
+                    '10일선': stock['ma10'],
+                    '괴리율': f"{stock['ma_distance_percent']:+.1f}%"
+                })
+
+            # 하나의 DataFrame으로 통합
+            all_category_data = sell_data + caution_data + surge_data
+            df_to_save = pd.DataFrame(all_category_data)
+
+            # Excel로 저장 (여러 시트로 분리)
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # 전체 데이터 (하나의 시트)
+                df_to_save.to_excel(writer, sheet_name='전체', index=False)
+
+                # 카테고리별 시트
+                if len(sell_data) > 0:
+                    pd.DataFrame(sell_data).to_excel(writer, sheet_name='강력매도신호', index=False)
+                if len(caution_data) > 0:
+                    pd.DataFrame(caution_data).to_excel(writer, sheet_name='주의필요', index=False)
+                if len(surge_data) > 0:
+                    pd.DataFrame(surge_data).to_excel(writer, sheet_name='거래량폭증', index=False)
+
+            print(f"\n✓ Excel 저장 완료: {output_path}")
+            print(f"  - 강력 매도 신호: {len(sell_data)}개")
+            print(f"  - 주의 필요: {len(caution_data)}개")
+            print(f"  - 거래량 폭증: {len(surge_data)}개")
+            print(f"  총 {len(all_category_data)}개 종목")
 
     except KeyboardInterrupt:
         print("\n\n프로그램이 중단되었습니다.")
