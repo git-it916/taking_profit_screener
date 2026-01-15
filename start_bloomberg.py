@@ -55,19 +55,26 @@ def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool 
             return None
 
         # ================================================================
-        # [1-1단계] 당일 데이터 제외 (일봉 미완성 가능성)
+        # [1-1단계] 당일 데이터 제외 (장중에만 - 마감 후에는 포함)
         # ================================================================
-        from datetime import datetime as dt
-        today = dt.now().date()
+        from datetime import datetime as dt, time
+        now = dt.now()
+        today = now.date()
+        current_time = now.time()
+
+        # 한국 시장 마감 시간: 오후 3시 30분
+        market_close_time = time(15, 30)
 
         # Date 컬럼을 datetime으로 변환
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
             df['date_only'] = df['Date'].dt.date
 
-            # 당일 데이터가 있으면 제외 (일봉 미완성)
-            if (df['date_only'] == today).any():
-                df = df[df['date_only'] != today].copy()
+            # 장중(마감 전)에만 당일 데이터 제외
+            if current_time < market_close_time:
+                # 당일 데이터가 있으면 제외 (일봉 미완성)
+                if (df['date_only'] == today).any():
+                    df = df[df['date_only'] != today].copy()
 
             # 임시 컬럼 제거
             df = df.drop(columns=['date_only'])
@@ -142,7 +149,7 @@ def main():
         print(f"\n데이터 기간: 최근 3개월")
 
         # ================================================================
-        # 분석 실행 (진행 상황 표시)
+        # 분석 실행 (병렬 처리)
         # ================================================================
         print("\n" + "="*80)
         print(f"총 {len(tickers)}개 종목 분석 시작")
@@ -150,30 +157,57 @@ def main():
         print()
 
         from datetime import datetime as dt
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from threading import Lock
+
         results = []
         failed_count = 0
+        completed_count = 0
+        lock = Lock()
         start_time = dt.now()
 
-        for i, ticker in enumerate(tickers, 1):
-            result = analyze_from_bloomberg(ticker, period=period, show_progress=False)
+        # 병렬 처리 워커 수 (5개)
+        max_workers = 5
+        print(f"병렬 처리: {max_workers}개 동시 실행\n")
 
-            if result:
-                results.append(result)
-            else:
-                failed_count += 1
+        def analyze_single(ticker):
+            """단일 티커 분석 (worker thread에서 실행)"""
+            try:
+                result = analyze_from_bloomberg(ticker, period=period, show_progress=False)
+                return (ticker, result, None)
+            except Exception as e:
+                return (ticker, None, str(e))
 
-            # 진행 상황 표시 (한 줄로 업데이트)
-            elapsed = dt.now() - start_time
-            progress = i / len(tickers) * 100
+        # ThreadPoolExecutor로 병렬 처리
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 모든 작업 제출
+            future_to_ticker = {executor.submit(analyze_single, ticker): ticker
+                               for ticker in tickers}
 
-            # 프로그레스 바 생성
-            bar_length = 40
-            filled_length = int(bar_length * i // len(tickers))
-            bar = '█' * filled_length + '░' * (bar_length - filled_length)
+            # 완료되는 대로 처리
+            for future in as_completed(future_to_ticker):
+                ticker, result, error = future.result()
 
-            print(f"\r진행: [{bar}] {i}/{len(tickers)} ({progress:.1f}%) | "
-                  f"성공: {len(results)} | 실패: {failed_count} | "
-                  f"경과: {str(elapsed).split('.')[0]}", end='', flush=True)
+                with lock:
+                    completed_count += 1
+
+                    if result:
+                        results.append(result)
+                    else:
+                        failed_count += 1
+
+                    # 진행 상황 표시 (한 줄로 업데이트)
+                    elapsed = dt.now() - start_time
+                    progress = completed_count / len(tickers) * 100
+
+                    # 프로그레스 바 생성
+                    bar_length = 40
+                    filled_length = int(bar_length * completed_count // len(tickers))
+                    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+
+                    print(f"\r진행: [{bar}] {completed_count}/{len(tickers)} ({progress:.1f}%) | "
+                          f"성공: {len(results)} | 실패: {failed_count} | "
+                          f"경과: {str(elapsed).split('.')[0]}", end='', flush=True)
 
         print()  # 줄바꿈
         total_time = dt.now() - start_time
@@ -369,87 +403,233 @@ def main():
             # ====================================================================
 
             # [1] 강력 매도 신호 (10일선 하회 + 거래량 폭증)
-            sell_stocks = results_df[results_df['signal'] == 'SELL']
+            sell_stocks = results_df[results_df['signal'] == 'SELL'].copy()
             sell_data = []
             for _, stock in sell_stocks.iterrows():
                 ticker = stock['ticker']
                 security_name = ticker_names.get(ticker, ticker)
                 sell_data.append({
                     '카테고리': '강력 매도 신호',
-                    '티커': ticker,
                     '종목명': security_name,
-                    '추세정보': stock['trend_detail'],
-                    'RVOL': f"{stock['rvol']:.1f}배",
-                    '신호': 'SELL',
+                    '티커': ticker,
+                    'RVOL': stock['rvol'],
+                    '10일선돌파일': stock.get('last_ma10_break_above'),
+                    '10일선이탈일': stock.get('last_ma10_break_below'),
+                    '추세상세': stock['trend_detail'],
                     '현재가': stock['close_price'],
+                    '전일종가': stock['prev_close'],
+                    '전일비(%)': stock['price_change_percent'],
                     '10일선': stock['ma10'],
-                    '괴리율': f"{stock['ma_distance_percent']:+.1f}%"
+                    '10일선괴리율(%)': stock['ma_distance_percent']
                 })
 
             # [2] 주의 필요 (10일선 하회 + 거래량 부족)
             caution = results_df[
                 results_df['condition_1_trend_breakdown'] &
                 ~results_df['condition_2_volume_confirmation']
-            ]
+            ].copy()
             caution_data = []
             for _, stock in caution.iterrows():
                 ticker = stock['ticker']
                 security_name = ticker_names.get(ticker, ticker)
                 caution_data.append({
                     '카테고리': '주의 필요',
-                    '티커': ticker,
                     '종목명': security_name,
-                    '추세정보': stock['trend_detail'],
-                    'RVOL': f"{stock['rvol']:.1f}배",
-                    '신호': 'HOLD',
+                    '티커': ticker,
+                    'RVOL': stock['rvol'],
+                    '10일선돌파일': stock.get('last_ma10_break_above'),
+                    '10일선이탈일': stock.get('last_ma10_break_below'),
+                    '추세상세': stock['trend_detail'],
                     '현재가': stock['close_price'],
+                    '전일종가': stock['prev_close'],
+                    '전일비(%)': stock['price_change_percent'],
                     '10일선': stock['ma10'],
-                    '괴리율': f"{stock['ma_distance_percent']:+.1f}%"
+                    '10일선괴리율(%)': stock['ma_distance_percent']
                 })
 
             # [3] 거래량 폭증 (10일선 위 + 거래량 폭증)
             rvol_surge = results_df[
                 ~results_df['condition_1_trend_breakdown'] &
                 results_df['condition_2_volume_confirmation']
-            ]
+            ].copy()
             surge_data = []
             for _, stock in rvol_surge.iterrows():
                 ticker = stock['ticker']
                 security_name = ticker_names.get(ticker, ticker)
                 surge_data.append({
                     '카테고리': '거래량 폭증',
-                    '티커': ticker,
                     '종목명': security_name,
-                    '추세정보': stock['trend_detail'],
-                    'RVOL': f"{stock['rvol']:.1f}배",
-                    '신호': 'WATCH',
+                    '티커': ticker,
+                    'RVOL': stock['rvol'],
+                    '10일선돌파일': stock.get('last_ma10_break_above'),
+                    '10일선이탈일': stock.get('last_ma10_break_below'),
+                    '추세상세': stock['trend_detail'],
                     '현재가': stock['close_price'],
+                    '전일종가': stock['prev_close'],
+                    '전일비(%)': stock['price_change_percent'],
                     '10일선': stock['ma10'],
-                    '괴리율': f"{stock['ma_distance_percent']:+.1f}%"
+                    '10일선괴리율(%)': stock['ma_distance_percent']
                 })
 
-            # 하나의 DataFrame으로 통합
-            all_category_data = sell_data + caution_data + surge_data
+            # ====================================================================
+            # 10일선 이탈일 필터링 함수 정의 (최근 5일 이내)
+            # 주의: "거래량 폭증"은 10일선 위에 있어서 이탈일 필터링 제외
+            # ====================================================================
+            from datetime import date, timedelta
+
+            today = date.today()
+            cutoff_date = today - timedelta(days=5)
+
+            def is_recent_breakdown(breakdown_date_str):
+                """10일선 이탈일이 최근 5일 이내인지 확인"""
+                if pd.isna(breakdown_date_str):
+                    return False
+                try:
+                    # 문자열을 date 객체로 변환
+                    breakdown_date = pd.to_datetime(breakdown_date_str).date()
+                    # cutoff_date 이후인지 확인 (최근 5일 이내)
+                    return breakdown_date >= cutoff_date
+                except:
+                    return False
+
+            # ====================================================================
+            # 이탈일-돌파일 차이 확인 함수 (3일 이상 차이나야 유효)
+            # ====================================================================
+            def has_valid_date_gap(breakout_date_str, breakdown_date_str):
+                """10일선 돌파일과 이탈일의 차이가 3일 이상인지 확인"""
+                if pd.isna(breakout_date_str) or pd.isna(breakdown_date_str):
+                    return False
+                try:
+                    breakout_date = pd.to_datetime(breakout_date_str).date()
+                    breakdown_date = pd.to_datetime(breakdown_date_str).date()
+                    # 이탈일 - 돌파일 >= 3일
+                    gap = (breakdown_date - breakout_date).days
+                    return gap >= 3
+                except:
+                    return False
+
+            # ====================================================================
+            # 카테고리별로 필터링 적용
+            # - "강력 매도 신호", "주의 필요": 10일선 아래 → 이탈일 필터링 + 날짜 차이 확인
+            # - "거래량 폭증": 10일선 위 → 필터링 제외 (이탈일 없음)
+            # ====================================================================
+
+            # [1] 강력 매도 신호 필터링 (이탈일 최근 5일 + 날짜 차이 3일 이상)
+            sell_data_filtered = []
+            for item in sell_data:
+                if (is_recent_breakdown(item.get('10일선이탈일')) and
+                    has_valid_date_gap(item.get('10일선돌파일'), item.get('10일선이탈일'))):
+                    sell_data_filtered.append(item)
+
+            # [2] 주의 필요 필터링 (이탈일 최근 5일 + 날짜 차이 3일 이상)
+            caution_data_filtered = []
+            for item in caution_data:
+                if (is_recent_breakdown(item.get('10일선이탈일')) and
+                    has_valid_date_gap(item.get('10일선돌파일'), item.get('10일선이탈일'))):
+                    caution_data_filtered.append(item)
+
+            # [3] 거래량 폭증은 필터링 제외 (10일선 위에 있음)
+            surge_data_filtered = surge_data  # 필터링 안함
+
+            # 필터링 결과 출력
+            print(f"\n[필터링] 10일선 이탈일 기준 (최근 5일 이내 + 돌파-이탈 차이 3일 이상)")
+            print(f"  - 강력 매도 신호: {len(sell_data)}개 → {len(sell_data_filtered)}개")
+            print(f"  - 주의 필요: {len(caution_data)}개 → {len(caution_data_filtered)}개")
+            print(f"  - 거래량 폭증: {len(surge_data)}개 (필터링 제외)")
+
+            # 하나의 DataFrame으로 통합 (필터링된 데이터)
+            all_category_data = sell_data_filtered + caution_data_filtered + surge_data_filtered
             df_to_save = pd.DataFrame(all_category_data)
+
+            # 소수점 반올림 (RVOL, 전일비(%), 10일선괴리율(%))
+            if 'RVOL' in df_to_save.columns:
+                df_to_save['RVOL'] = df_to_save['RVOL'].round(1)
+            if '전일비(%)' in df_to_save.columns:
+                df_to_save['전일비(%)'] = df_to_save['전일비(%)'].round(1)
+            if '10일선괴리율(%)' in df_to_save.columns:
+                df_to_save['10일선괴리율(%)'] = df_to_save['10일선괴리율(%)'].round(1)
+
+            # 정렬: 10일선 이탈일 내림차순 (최근 먼저) → 10일선 돌파일 오름차순 (오래된 먼저)
+            if '10일선돌파일' in df_to_save.columns and '10일선이탈일' in df_to_save.columns:
+                df_to_save = df_to_save.sort_values(
+                    by=['10일선이탈일', '10일선돌파일'],
+                    ascending=[False, True],
+                    na_position='last'
+                )
 
             # Excel로 저장 (여러 시트로 분리)
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 # 전체 데이터 (하나의 시트)
                 df_to_save.to_excel(writer, sheet_name='전체', index=False)
 
-                # 카테고리별 시트
-                if len(sell_data) > 0:
-                    pd.DataFrame(sell_data).to_excel(writer, sheet_name='강력매도신호', index=False)
-                if len(caution_data) > 0:
-                    pd.DataFrame(caution_data).to_excel(writer, sheet_name='주의필요', index=False)
-                if len(surge_data) > 0:
-                    pd.DataFrame(surge_data).to_excel(writer, sheet_name='거래량폭증', index=False)
+                # 카테고리별 시트 (각각 필터링, 반올림 및 정렬 적용)
+                # 순서: 강력매도신호 → 주의필요 → 거래량폭증
+
+                # [1] 강력매도신호
+                if len(sell_data_filtered) > 0:
+                    df_sell = pd.DataFrame(sell_data_filtered)
+                    # 반올림
+                    if 'RVOL' in df_sell.columns:
+                        df_sell['RVOL'] = df_sell['RVOL'].round(1)
+                    if '전일비(%)' in df_sell.columns:
+                        df_sell['전일비(%)'] = df_sell['전일비(%)'].round(1)
+                    if '10일선괴리율(%)' in df_sell.columns:
+                        df_sell['10일선괴리율(%)'] = df_sell['10일선괴리율(%)'].round(1)
+                    # 정렬
+                    if '10일선돌파일' in df_sell.columns and '10일선이탈일' in df_sell.columns:
+                        df_sell = df_sell.sort_values(
+                            by=['10일선이탈일', '10일선돌파일'],
+                            ascending=[False, True],
+                            na_position='last'
+                        )
+                    if len(df_sell) > 0:  # 필터링 후 데이터가 있으면 저장
+                        df_sell.to_excel(writer, sheet_name='강력매도신호', index=False)
+
+                # [2] 주의필요 (위로)
+                if len(caution_data_filtered) > 0:
+                    df_caution = pd.DataFrame(caution_data_filtered)
+                    # 반올림
+                    if 'RVOL' in df_caution.columns:
+                        df_caution['RVOL'] = df_caution['RVOL'].round(1)
+                    if '전일비(%)' in df_caution.columns:
+                        df_caution['전일비(%)'] = df_caution['전일비(%)'].round(1)
+                    if '10일선괴리율(%)' in df_caution.columns:
+                        df_caution['10일선괴리율(%)'] = df_caution['10일선괴리율(%)'].round(1)
+                    # 정렬
+                    if '10일선돌파일' in df_caution.columns and '10일선이탈일' in df_caution.columns:
+                        df_caution = df_caution.sort_values(
+                            by=['10일선이탈일', '10일선돌파일'],
+                            ascending=[False, True],
+                            na_position='last'
+                        )
+                    if len(df_caution) > 0:  # 필터링 후 데이터가 있으면 저장
+                        df_caution.to_excel(writer, sheet_name='주의필요', index=False)
+
+                # [3] 거래량폭증 (아래로) - 필터링 제외
+                if len(surge_data_filtered) > 0:
+                    df_surge = pd.DataFrame(surge_data_filtered)
+                    # 반올림
+                    if 'RVOL' in df_surge.columns:
+                        df_surge['RVOL'] = df_surge['RVOL'].round(1)
+                    if '전일비(%)' in df_surge.columns:
+                        df_surge['전일비(%)'] = df_surge['전일비(%)'].round(1)
+                    if '10일선괴리율(%)' in df_surge.columns:
+                        df_surge['10일선괴리율(%)'] = df_surge['10일선괴리율(%)'].round(1)
+                    # 정렬
+                    if '10일선돌파일' in df_surge.columns and '10일선이탈일' in df_surge.columns:
+                        df_surge = df_surge.sort_values(
+                            by=['10일선이탈일', '10일선돌파일'],
+                            ascending=[False, True],
+                            na_position='last'
+                        )
+                    if len(df_surge) > 0:  # 필터링 후 데이터가 있으면 저장
+                        df_surge.to_excel(writer, sheet_name='거래량폭증', index=False)
 
             print(f"\n✓ Excel 저장 완료: {output_path}")
+            print(f"  - 전체 (필터링 후): {len(df_to_save)}개")
             print(f"  - 강력 매도 신호: {len(sell_data)}개")
             print(f"  - 주의 필요: {len(caution_data)}개")
             print(f"  - 거래량 폭증: {len(surge_data)}개")
-            print(f"  총 {len(all_category_data)}개 종목")
 
     except KeyboardInterrupt:
         print("\n\n프로그램이 중단되었습니다.")
