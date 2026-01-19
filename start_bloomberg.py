@@ -390,7 +390,7 @@ def main():
             from datetime import datetime as dt
 
             # 저장 경로 생성
-            output_dir = r"C:\Users\Bloomberg\Documents\ssh_project\start-bloomberg-result"
+            output_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오전] start-bloomberg-result"
             os.makedirs(output_dir, exist_ok=True)
 
             # 파일명에 타임스탬프 추가

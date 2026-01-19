@@ -120,7 +120,7 @@ def get_tickers_from_excel(file_path: str) -> list:
         return []
 
 
-def analyze_from_bloomberg(ticker: str, period: str = '3M') -> dict:
+def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> dict:
     """
     Bloomberg에서 데이터를 받아 분석
 
@@ -130,6 +130,9 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M') -> dict:
         Bloomberg 티커
     period : str
         데이터 기간 (기본값: '3M' - 3개월)
+    mode : int
+        1 = 보고용 (전일 또는 장마감 후 당일 완성된 데이터)
+        2 = 실시간 (현재 시점의 미완성 데이터 포함)
 
     Returns:
     --------
@@ -143,7 +146,7 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M') -> dict:
             return None
 
         # ================================================================
-        # 당일 데이터 제외 (장중에만 - 마감 후에는 포함)
+        # 모드에 따른 데이터 처리
         # ================================================================
         from datetime import datetime as dt, time
         now = dt.now()
@@ -158,14 +161,17 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M') -> dict:
             df['Date'] = pd.to_datetime(df['Date'])
             df['date_only'] = df['Date'].dt.date
 
-            # 장중(마감 전)에만 당일 데이터 제외
-            if current_time < market_close_time:
-                # 당일 데이터가 있으면 제외 (일봉 미완성)
-                if (df['date_only'] == today).any():
-                    df = df[df['date_only'] != today].copy()
+            if mode == 1:
+                # 모드 1: 보고용 (완성된 일봉만 사용)
+                # 장 마감 전이면 당일 데이터 제외, 마감 후면 당일 포함
+                if current_time < market_close_time:
+                    if (df['date_only'] == today).any():
+                        df = df[df['date_only'] != today].copy()
+            # 모드 2: 실시간 - 당일 데이터 포함 (제외하지 않음)
 
             # 임시 컬럼 제거
-            df = df.drop(columns=['date_only'])
+            if 'date_only' in df.columns:
+                df = df.drop(columns=['date_only'])
 
         if len(df) == 0:
             return None
@@ -180,7 +186,7 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M') -> dict:
         return None
 
 
-def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int = 3) -> list:
+def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int = 3, mode: int = 1) -> list:
     """
     병렬 방식으로 여러 티커 분석 (Bloomberg API 병렬 호출)
 
@@ -192,6 +198,9 @@ def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int
         데이터 기간
     max_workers : int
         동시 실행 worker 수 (기본값: 3 - 안전한 수준)
+    mode : int
+        1 = 보고용 (전일 또는 장마감 후 당일 완성된 데이터)
+        2 = 실시간 (현재 시점의 미완성 데이터 포함)
 
     Returns:
     --------
@@ -205,7 +214,9 @@ def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int
     completed_count = 0
     lock = Lock()
 
+    mode_name = "보고용 (완성된 일봉)" if mode == 1 else "실시간 (현재 시점)"
     print(f"\n총 {len(tickers)}개 종목 분석 시작...")
+    print(f"분석 모드: {mode_name}")
     print(f"병렬 처리: {max_workers}개 동시 실행")
     print(f"⚠️  Bloomberg API 안정성을 위해 {max_workers}개씩 처리합니다.\n")
 
@@ -214,7 +225,7 @@ def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int
     def analyze_single(ticker):
         """단일 티커 분석 (worker thread에서 실행)"""
         try:
-            result = analyze_from_bloomberg(ticker, period=period)
+            result = analyze_from_bloomberg(ticker, period=period, mode=mode)
             return (ticker, result, None)
         except Exception as e:
             return (ticker, None, str(e))
@@ -341,6 +352,29 @@ def main():
     print("  - 거래량 폭증 (RVOL ≥ 1.5배)")
 
     # ====================================================================
+    # 분석 모드 선택
+    # ====================================================================
+    print("\n" + "="*80)
+    print("분석 모드 선택")
+    print("="*80)
+    print("\n[1] 보고용 - 전일 또는 장마감 후 당일 (완성된 일봉)")
+    print("    → 장중: 전일까지의 데이터 사용")
+    print("    → 장마감 후(15:30 이후): 당일 포함")
+    print("\n[2] 실시간 - 현재 시점의 10일선 돌파 및 RVOL 확인")
+    print("    → 장중 미완성 데이터 포함")
+    print("    → 현재 거래량 기준 RVOL 계산")
+
+    while True:
+        mode_input = input("\n모드 선택 (1 또는 2): ").strip()
+        if mode_input in ['1', '2']:
+            mode = int(mode_input)
+            break
+        print("1 또는 2를 입력해주세요.")
+
+    mode_name = "보고용 (완성된 일봉)" if mode == 1 else "실시간 (현재 시점)"
+    print(f"\n✓ 선택된 모드: {mode_name}")
+
+    # ====================================================================
     # 엑셀 파일에서 티커 로드
     # ====================================================================
     print("\n" + "="*80)
@@ -349,21 +383,9 @@ def main():
 
     # 기본 파일 경로
     default_file = "bloomberg_ticker.xlsx"
+    file_path = default_file
 
-    print(f"\n기본 파일: {default_file}")
-    print("다른 파일을 사용하려면 경로를 입력하세요 (엔터=기본 파일 사용)")
-    print("\n엑셀 파일 형식:")
-    print("  - 'bloomberg_ticker' 컬럼에 티커 리스트 (예: 005930 KS, 000660 KQ)")
-
-    user_input = input("\n파일 경로 (엔터=기본): ").strip()
-
-    # 사용자 입력이 없으면 기본 파일 사용
-    if not user_input:
-        file_path = default_file
-        print(f"✓ 기본 파일 사용: {default_file}")
-    else:
-        # 따옴표 제거 (사용자가 경로를 따옴표로 감쌀 수 있음)
-        file_path = user_input.strip('"').strip("'")
+    print(f"\n✓ 엑셀 파일: {default_file}")
 
     # 엑셀 파일에서 티커 읽기
     all_tickers = get_tickers_from_excel(file_path)
@@ -372,13 +394,7 @@ def main():
         print("\n[에러] 티커를 읽을 수 없습니다")
         return
 
-    # 사용자 확인
     print(f"\n총 {len(all_tickers)}개 종목을 분석합니다.")
-    proceed = input("계속 진행하시겠습니까? (y/n): ").strip().lower()
-
-    if proceed != 'y':
-        print("\n분석을 취소했습니다.")
-        return
 
     # ====================================================================
     # 전종목 분석 실행 (병렬 처리)
@@ -387,7 +403,7 @@ def main():
     print("전종목 분석 시작 (3개월 데이터)")
     print("="*80)
 
-    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=10)
+    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=10, mode=mode)
 
     if not results:
         print("\n[에러] 분석 결과가 없습니다")
@@ -537,12 +553,17 @@ def main():
     print("\n" + "="*80)
     print("엑셀 파일 저장 중...")
 
-    # 저장 디렉토리 생성
-    save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\whole-stock-result"
+    # 저장 디렉토리 생성 (모드별)
+    if mode == 1:
+        save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오후] whole-stock-result"
+        file_prefix = "전종목_스크리닝_보고용"
+    else:
+        save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오후] whole-stock-result"
+        file_prefix = "전종목_스크리닝_실시간"
     os.makedirs(save_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = os.path.join(save_dir, f"전종목_스크리닝_{timestamp}.xlsx")
+    output_filename = os.path.join(save_dir, f"{file_prefix}_{timestamp}.xlsx")
 
     # 저장용 DataFrame 생성 (추세방향, 신호 제외)
     save_df = filtered_df[[
@@ -579,12 +600,31 @@ def main():
         'ma_distance_percent': '10일선괴리율(%)'
     })
 
-    # 정렬: 10일선 돌파일 내림차순 (최근 먼저) → 10일선 이탈일 오름차순 (오래된 먼저)
+    # 모드에 따른 필터링
+    from datetime import date
+    today = date.today()
+
+    if mode == 1:
+        # 모드 1 (보고용): 10일선 돌파일이 당일인 종목만
+        before_filter = len(save_df)
+        save_df['돌파일_date'] = pd.to_datetime(save_df['10일선돌파일']).dt.date
+        save_df = save_df[save_df['돌파일_date'] == today].copy()
+        save_df = save_df.drop(columns=['돌파일_date'])
+        after_filter = len(save_df)
+        print(f"\n[필터링] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
+    else:
+        # 모드 2 (실시간): 필터링 없이 모든 종목 유지
+        print(f"\n[실시간 모드] 현재 10일선 돌파 + RVOL≥1.5 조건 충족 종목: {len(save_df)}개")
+
+    # 정렬: 시가총액 내림차순 → 10일선 돌파일 내림차순
+    # 시가총액을 숫자로 변환하여 정렬
+    save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
     save_df = save_df.sort_values(
-        by=['10일선돌파일', '10일선이탈일'],
-        ascending=[False, True],
+        by=['시가총액_num', '10일선돌파일'],
+        ascending=[False, False],
         na_position='last'
     )
+    save_df = save_df.drop(columns=['시가총액_num'])
 
     # 엑셀로 저장
     save_df.to_excel(output_filename, index=False, engine='openpyxl')
