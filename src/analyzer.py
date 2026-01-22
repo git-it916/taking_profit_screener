@@ -26,6 +26,39 @@ class StockAnalyzer:
         self.rvol_period = rvol_period
         self.screener = ExitSignalScreener(ma_period=ma_period, rvol_period=rvol_period)
 
+    def _calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """
+        RSI (Relative Strength Index) 계산
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            OHLCV 데이터 (Close 컬럼 필요)
+        period : int
+            RSI 기간 (기본값: 14)
+
+        Returns:
+        --------
+        pd.Series : RSI 값
+        """
+        delta = df['Close'].diff()
+
+        # 상승/하락 분리
+        gain = delta.where(delta > 0, 0)
+        loss = (-delta).where(delta < 0, 0)
+
+        # 평균 상승/하락 (Wilder's smoothing)
+        avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
+        avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
+
+        # RS 계산
+        rs = avg_gain / avg_loss
+
+        # RSI 계산
+        rsi = 100 - (100 / (1 + rs))
+
+        return rsi
+
     def analyze_latest(self, df: pd.DataFrame, ticker: str = "UNKNOWN") -> Dict:
         """
         최신 데이터 분석 (가장 최근 일자)
@@ -43,6 +76,10 @@ class StockAnalyzer:
         """
         # 필터 적용
         filtered_data = self.screener.apply_filters(df)
+
+        # RSI 계산 (14일 기준)
+        filtered_data = filtered_data.copy()
+        filtered_data['RSI'] = self._calculate_rsi(filtered_data, period=14)
 
         # 최신 데이터 추출
         latest = filtered_data.iloc[-1]
@@ -138,6 +175,9 @@ class StockAnalyzer:
             'rvol_direction': rvol_direction,
             'rvol_change': rvol_change,
             'condition_2_volume_confirmation': condition_2,
+
+            # RSI 분석
+            'rsi': float(latest['RSI']) if pd.notna(latest['RSI']) else None,
 
             # 종합 신호
             'signal': latest['Signal'],

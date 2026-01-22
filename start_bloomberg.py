@@ -125,7 +125,22 @@ def main():
 
         # 티커 리스트 파싱
         tickers = [t.strip() for t in user_input.split(',')]
-        print(f"\n입력된 티커: {tickers}")
+        print(f"\n입력된 티커: {len(tickers)}개")
+
+        # ================================================================
+        # 제외할 티커 입력 (선택사항)
+        # ================================================================
+        print("\n" + "-"*40)
+        exclude_input = input("제외할 티커 입력 (없으면 엔터): ").strip()
+
+        if exclude_input:
+            exclude_tickers = [t.strip() for t in exclude_input.split(',')]
+            before_count = len(tickers)
+            tickers = [t for t in tickers if t not in exclude_tickers]
+            after_count = len(tickers)
+            print(f"✓ 제외 완료: {before_count}개 → {after_count}개 ({before_count - after_count}개 제외)")
+
+        print(f"\n최종 분석 대상: {len(tickers)}개")
 
         # ================================================================
         # 종목명 조회 (Bloomberg API)
@@ -413,6 +428,7 @@ def main():
                     '종목명': security_name,
                     '티커': ticker,
                     'RVOL': stock['rvol'],
+                    'RSI': stock.get('rsi'),
                     '10일선돌파일': stock.get('last_ma10_break_above'),
                     '10일선이탈일': stock.get('last_ma10_break_below'),
                     '추세상세': stock['trend_detail'],
@@ -437,6 +453,7 @@ def main():
                     '종목명': security_name,
                     '티커': ticker,
                     'RVOL': stock['rvol'],
+                    'RSI': stock.get('rsi'),
                     '10일선돌파일': stock.get('last_ma10_break_above'),
                     '10일선이탈일': stock.get('last_ma10_break_below'),
                     '추세상세': stock['trend_detail'],
@@ -461,6 +478,7 @@ def main():
                     '종목명': security_name,
                     '티커': ticker,
                     'RVOL': stock['rvol'],
+                    'RSI': stock.get('rsi'),
                     '10일선돌파일': stock.get('last_ma10_break_above'),
                     '10일선이탈일': stock.get('last_ma10_break_below'),
                     '추세상세': stock['trend_detail'],
@@ -541,21 +559,32 @@ def main():
             all_category_data = sell_data_filtered + caution_data_filtered + surge_data_filtered
             df_to_save = pd.DataFrame(all_category_data)
 
-            # 소수점 반올림 (RVOL, 전일비(%), 10일선괴리율(%))
+            # 소수점 반올림 (RVOL, RSI, 전일비(%), 10일선괴리율(%))
             if 'RVOL' in df_to_save.columns:
                 df_to_save['RVOL'] = df_to_save['RVOL'].round(1)
+            if 'RSI' in df_to_save.columns:
+                df_to_save['RSI'] = df_to_save['RSI'].round(1)
             if '전일비(%)' in df_to_save.columns:
                 df_to_save['전일비(%)'] = df_to_save['전일비(%)'].round(1)
             if '10일선괴리율(%)' in df_to_save.columns:
                 df_to_save['10일선괴리율(%)'] = df_to_save['10일선괴리율(%)'].round(1)
 
-            # 정렬: 10일선 이탈일 내림차순 (최근 먼저) → 10일선 돌파일 오름차순 (오래된 먼저)
-            if '10일선돌파일' in df_to_save.columns and '10일선이탈일' in df_to_save.columns:
-                df_to_save = df_to_save.sort_values(
-                    by=['10일선이탈일', '10일선돌파일'],
-                    ascending=[False, True],
-                    na_position='last'
-                )
+            # 정렬: 카테고리 순서 (강력 매도 신호 → 주의 필요 → 거래량 폭증) → 10일선 이탈일 내림차순 → 10일선 돌파일 오름차순
+            if '카테고리' in df_to_save.columns:
+                # 카테고리 순서 지정
+                category_order = {'강력 매도 신호': 0, '주의 필요': 1, '거래량 폭증': 2}
+                df_to_save['카테고리_순서'] = df_to_save['카테고리'].map(category_order).fillna(99)
+
+                if '10일선돌파일' in df_to_save.columns and '10일선이탈일' in df_to_save.columns:
+                    df_to_save = df_to_save.sort_values(
+                        by=['카테고리_순서', '10일선이탈일', '10일선돌파일'],
+                        ascending=[True, False, True],
+                        na_position='last'
+                    )
+                else:
+                    df_to_save = df_to_save.sort_values(by=['카테고리_순서'], ascending=[True])
+
+                df_to_save = df_to_save.drop(columns=['카테고리_순서'])
 
             # Excel로 저장 (여러 시트로 분리)
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -571,6 +600,8 @@ def main():
                     # 반올림
                     if 'RVOL' in df_sell.columns:
                         df_sell['RVOL'] = df_sell['RVOL'].round(1)
+                    if 'RSI' in df_sell.columns:
+                        df_sell['RSI'] = df_sell['RSI'].round(1)
                     if '전일비(%)' in df_sell.columns:
                         df_sell['전일비(%)'] = df_sell['전일비(%)'].round(1)
                     if '10일선괴리율(%)' in df_sell.columns:
@@ -591,6 +622,8 @@ def main():
                     # 반올림
                     if 'RVOL' in df_caution.columns:
                         df_caution['RVOL'] = df_caution['RVOL'].round(1)
+                    if 'RSI' in df_caution.columns:
+                        df_caution['RSI'] = df_caution['RSI'].round(1)
                     if '전일비(%)' in df_caution.columns:
                         df_caution['전일비(%)'] = df_caution['전일비(%)'].round(1)
                     if '10일선괴리율(%)' in df_caution.columns:
@@ -611,6 +644,8 @@ def main():
                     # 반올림
                     if 'RVOL' in df_surge.columns:
                         df_surge['RVOL'] = df_surge['RVOL'].round(1)
+                    if 'RSI' in df_surge.columns:
+                        df_surge['RSI'] = df_surge['RSI'].round(1)
                     if '전일비(%)' in df_surge.columns:
                         df_surge['전일비(%)'] = df_surge['전일비(%)'].round(1)
                     if '10일선괴리율(%)' in df_surge.columns:

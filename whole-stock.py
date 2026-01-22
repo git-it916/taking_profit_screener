@@ -146,32 +146,10 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> di
             return None
 
         # ================================================================
-        # 모드에 따른 데이터 처리
+        # 데이터 처리 (당일 데이터 포함 - 어제+오늘 돌파 종목 확인 위해)
         # ================================================================
-        from datetime import datetime as dt, time
-        now = dt.now()
-        today = now.date()
-        current_time = now.time()
-
-        # 한국 시장 마감 시간: 오후 3시 30분
-        market_close_time = time(15, 30)
-
-        # Date 컬럼을 datetime으로 변환
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
-            df['date_only'] = df['Date'].dt.date
-
-            if mode == 1:
-                # 모드 1: 보고용 (완성된 일봉만 사용)
-                # 장 마감 전이면 당일 데이터 제외, 마감 후면 당일 포함
-                if current_time < market_close_time:
-                    if (df['date_only'] == today).any():
-                        df = df[df['date_only'] != today].copy()
-            # 모드 2: 실시간 - 당일 데이터 포함 (제외하지 않음)
-
-            # 임시 컬럼 제거
-            if 'date_only' in df.columns:
-                df = df.drop(columns=['date_only'])
 
         if len(df) == 0:
             return None
@@ -299,13 +277,24 @@ def filter_volume_surge_breakout(results: list, rvol_threshold: float = 1.5) -> 
 
     df = pd.DataFrame(results)
 
+    # ====================================================================
+    # 디버깅: 각 조건별 종목 수 출력
+    # ====================================================================
+    print(f"\n[디버깅] 전체 분석 결과: {len(df)}개")
+
+    # 10일선 위 종목 (condition_1_trend_breakdown = False)
+    above_ma10 = ~df['condition_1_trend_breakdown']
+    print(f"[디버깅] 10일선 위 종목: {above_ma10.sum()}개")
+
+    # RVOL >= 1.5 종목 (condition_2_volume_confirmation = True)
+    high_rvol = df['condition_2_volume_confirmation']
+    print(f"[디버깅] RVOL >= 1.5 종목: {high_rvol.sum()}개")
+
     # 거래량 폭증 조건 (start_bloomberg.py와 동일)
     # - 10일선 위 (condition_1_trend_breakdown = False)
     # - 거래량 폭증 (condition_2_volume_confirmation = True)
-    condition_surge = (
-        ~df['condition_1_trend_breakdown'] &
-        df['condition_2_volume_confirmation']
-    )
+    condition_surge = above_ma10 & high_rvol
+    print(f"[디버깅] 두 조건 모두 충족 (10일선 위 + RVOL>=1.5): {condition_surge.sum()}개")
 
     # 필터링
     filtered = df[condition_surge].copy()
@@ -403,7 +392,7 @@ def main():
     print("전종목 분석 시작 (3개월 데이터)")
     print("="*80)
 
-    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=10, mode=mode)
+    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=15, mode=mode)
 
     if not results:
         print("\n[에러] 분석 결과가 없습니다")
@@ -566,13 +555,20 @@ def main():
     output_filename = os.path.join(save_dir, f"{file_prefix}_{timestamp}.xlsx")
 
     # 저장용 DataFrame 생성 (추세방향, 신호 제외)
-    save_df = filtered_df[[
+    # RSI 컬럼이 있는지 확인
+    base_columns = [
         'ticker', 'rvol',
         'last_ma10_break_above', 'last_ma10_break_below',
         'trend_detail',
         'close_price', 'prev_close', 'price_change_percent',
         'ma10', 'ma_distance_percent'
-    ]].copy()
+    ]
+
+    # RSI가 있으면 추가
+    if 'rsi' in filtered_df.columns:
+        base_columns.insert(2, 'rsi')
+
+    save_df = filtered_df[base_columns].copy()
 
     # 종목명과 시가총액 추가
     save_df.insert(0, '종목명', save_df['ticker'].map(ticker_names))
@@ -582,13 +578,15 @@ def main():
     # 시가총액 추가 (Bloomberg 원본 포맷)
     save_df.insert(2, '시가총액', save_df['티커'].map(market_caps))
 
-    # 소수점 반올림 (전일비, 10일선괴리율, RVOL)
+    # 소수점 반올림 (전일비, 10일선괴리율, RVOL, RSI)
     save_df['price_change_percent'] = save_df['price_change_percent'].round(1)
     save_df['ma_distance_percent'] = save_df['ma_distance_percent'].round(1)
     save_df['rvol'] = save_df['rvol'].round(1)
+    if 'rsi' in save_df.columns:
+        save_df['rsi'] = save_df['rsi'].round(1)
 
     # 컬럼명 한글화
-    save_df = save_df.rename(columns={
+    rename_dict = {
         'rvol': 'RVOL',
         'last_ma10_break_above': '10일선돌파일',
         'last_ma10_break_below': '10일선이탈일',
@@ -598,7 +596,10 @@ def main():
         'price_change_percent': '전일비(%)',
         'ma10': '10일선',
         'ma_distance_percent': '10일선괴리율(%)'
-    })
+    }
+    if 'rsi' in save_df.columns:
+        rename_dict['rsi'] = 'RSI'
+    save_df = save_df.rename(columns=rename_dict)
 
     # 모드에 따른 필터링
     from datetime import date
@@ -616,12 +617,12 @@ def main():
         # 모드 2 (실시간): 필터링 없이 모든 종목 유지
         print(f"\n[실시간 모드] 현재 10일선 돌파 + RVOL≥1.5 조건 충족 종목: {len(save_df)}개")
 
-    # 정렬: 시가총액 내림차순 → 10일선 돌파일 내림차순
+    # 정렬: 시가총액 내림차순 → 10일선 이탈일 오름차순
     # 시가총액을 숫자로 변환하여 정렬
     save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
     save_df = save_df.sort_values(
-        by=['시가총액_num', '10일선돌파일'],
-        ascending=[False, False],
+        by=['시가총액_num', '10일선이탈일'],
+        ascending=[False, True],
         na_position='last'
     )
     save_df = save_df.drop(columns=['시가총액_num'])
