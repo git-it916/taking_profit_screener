@@ -28,7 +28,7 @@ from src.bloomberg import download_bloomberg_data, get_multiple_security_names
 from src.visualizer import create_trend_heatmap
 
 
-def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool = True) -> dict:
+def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool = True, mode: int = 1) -> dict:
     """
     Bloomberg에서 데이터를 받아 분석
 
@@ -40,6 +40,8 @@ def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool 
         데이터 기간 (기본값: '1M')
     show_progress : bool
         진행 상황 표시 여부 (기본값: True)
+    mode : int
+        분석 모드 (1: 보고용 - 완성된 일봉, 2: 실시간 - 현재 시점)
 
     Returns:
     --------
@@ -55,7 +57,7 @@ def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool 
             return None
 
         # ================================================================
-        # [1-1단계] 당일 데이터 제외 (장중에만 - 마감 후에는 포함)
+        # [1-1단계] 당일 데이터 제외 (모드 1: 보고용에서만, 장중에만)
         # ================================================================
         from datetime import datetime as dt, time
         now = dt.now()
@@ -70,8 +72,9 @@ def analyze_from_bloomberg(ticker: str, period: str = '1M', show_progress: bool 
             df['Date'] = pd.to_datetime(df['Date'])
             df['date_only'] = df['Date'].dt.date
 
-            # 장중(마감 전)에만 당일 데이터 제외
-            if current_time < market_close_time:
+            # 모드 1 (보고용): 장중(마감 전)에만 당일 데이터 제외
+            # 모드 2 (실시간): 당일 데이터 포함
+            if mode == 1 and current_time < market_close_time:
                 # 당일 데이터가 있으면 제외 (일봉 미완성)
                 if (df['date_only'] == today).any():
                     df = df[df['date_only'] != today].copy()
@@ -143,6 +146,29 @@ def main():
         print(f"\n최종 분석 대상: {len(tickers)}개")
 
         # ================================================================
+        # 모드 선택 (보고용 vs 실시간)
+        # ================================================================
+        print("\n" + "="*80)
+        print("분석 모드 선택")
+        print("="*80)
+        print("\n[1] 보고용 - 완성된 일봉 데이터 기준")
+        print("    → 장중: 전일까지의 데이터 사용")
+        print("    → 장마감 후(15:30 이후): 당일 포함")
+        print("\n[2] 실시간 - 현재 시점 기준")
+        print("    → 장중 미완성 데이터 포함")
+        print("    → 현재 거래량 기준 RVOL 계산")
+
+        while True:
+            mode_input = input("\n모드 선택 (1 또는 2): ").strip()
+            if mode_input in ['1', '2']:
+                mode = int(mode_input)
+                break
+            print("1 또는 2를 입력해주세요.")
+
+        mode_name = "보고용 (완성된 일봉)" if mode == 1 else "실시간 (현재 시점)"
+        print(f"\n✓ 선택된 모드: {mode_name}")
+
+        # ================================================================
         # 종목명 조회 (Bloomberg API)
         # ================================================================
         print("\n[종목명 조회 중...]")
@@ -181,14 +207,14 @@ def main():
         lock = Lock()
         start_time = dt.now()
 
-        # 병렬 처리 워커 수 (5개)
-        max_workers = 5
+        # 병렬 처리 워커 수 (10개)
+        max_workers = 10
         print(f"병렬 처리: {max_workers}개 동시 실행\n")
 
         def analyze_single(ticker):
             """단일 티커 분석 (worker thread에서 실행)"""
             try:
-                result = analyze_from_bloomberg(ticker, period=period, show_progress=False)
+                result = analyze_from_bloomberg(ticker, period=period, show_progress=False, mode=mode)
                 return (ticker, result, None)
             except Exception as e:
                 return (ticker, None, str(e))
@@ -408,9 +434,10 @@ def main():
             output_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오전] start-bloomberg-result"
             os.makedirs(output_dir, exist_ok=True)
 
-            # 파일명에 타임스탬프 추가
+            # 파일명에 타임스탬프 및 모드 추가
             timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"조건별_분류_{timestamp}.xlsx"
+            mode_suffix = "보고용" if mode == 1 else "실시간"
+            output_filename = f"조건별_분류_{mode_suffix}_{timestamp}.xlsx"
             output_path = os.path.join(output_dir, output_filename)
 
             # ====================================================================
@@ -449,7 +476,7 @@ def main():
                 ticker = stock['ticker']
                 security_name = ticker_names.get(ticker, ticker)
                 caution_data.append({
-                    '카테고리': '주의 필요',
+                    '카테고리': 'profit taking',
                     '종목명': security_name,
                     '티커': ticker,
                     'RVOL': stock['rvol'],
@@ -474,7 +501,7 @@ def main():
                 ticker = stock['ticker']
                 security_name = ticker_names.get(ticker, ticker)
                 surge_data.append({
-                    '카테고리': '거래량 폭증',
+                    '카테고리': 'upside',
                     '종목명': security_name,
                     '티커': ticker,
                     'RVOL': stock['rvol'],
@@ -569,10 +596,10 @@ def main():
             if '10일선괴리율(%)' in df_to_save.columns:
                 df_to_save['10일선괴리율(%)'] = df_to_save['10일선괴리율(%)'].round(1)
 
-            # 정렬: 카테고리 순서 (강력 매도 신호 → 주의 필요 → 거래량 폭증) → 10일선 이탈일 내림차순 → 10일선 돌파일 오름차순
+            # 정렬: 카테고리 순서 (강력 매도 신호 → profit taking → upside) → 10일선 이탈일 내림차순 → 10일선 돌파일 오름차순
             if '카테고리' in df_to_save.columns:
                 # 카테고리 순서 지정
-                category_order = {'강력 매도 신호': 0, '주의 필요': 1, '거래량 폭증': 2}
+                category_order = {'강력 매도 신호': 0, 'profit taking': 1, 'upside': 2}
                 df_to_save['카테고리_순서'] = df_to_save['카테고리'].map(category_order).fillna(99)
 
                 if '10일선돌파일' in df_to_save.columns and '10일선이탈일' in df_to_save.columns:
@@ -636,7 +663,7 @@ def main():
                             na_position='last'
                         )
                     if len(df_caution) > 0:  # 필터링 후 데이터가 있으면 저장
-                        df_caution.to_excel(writer, sheet_name='주의필요', index=False)
+                        df_caution.to_excel(writer, sheet_name='profit taking', index=False)
 
                 # [3] 거래량폭증 (아래로) - 필터링 제외
                 if len(surge_data_filtered) > 0:
@@ -658,13 +685,13 @@ def main():
                             na_position='last'
                         )
                     if len(df_surge) > 0:  # 필터링 후 데이터가 있으면 저장
-                        df_surge.to_excel(writer, sheet_name='거래량폭증', index=False)
+                        df_surge.to_excel(writer, sheet_name='upside', index=False)
 
             print(f"\n✓ Excel 저장 완료: {output_path}")
             print(f"  - 전체 (필터링 후): {len(df_to_save)}개")
             print(f"  - 강력 매도 신호: {len(sell_data)}개")
-            print(f"  - 주의 필요: {len(caution_data)}개")
-            print(f"  - 거래량 폭증: {len(surge_data)}개")
+            print(f"  - profit taking: {len(caution_data)}개")
+            print(f"  - upside: {len(surge_data)}개")
 
     except KeyboardInterrupt:
         print("\n\n프로그램이 중단되었습니다.")

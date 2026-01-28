@@ -614,8 +614,13 @@ def main():
         after_filter = len(save_df)
         print(f"\n[필터링] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
     else:
-        # 모드 2 (실시간): 필터링 없이 모든 종목 유지
-        print(f"\n[실시간 모드] 현재 10일선 돌파 + RVOL≥1.5 조건 충족 종목: {len(save_df)}개")
+        # 모드 2 (실시간): 10일선 돌파일이 당일인 종목만
+        before_filter = len(save_df)
+        save_df['돌파일_date'] = pd.to_datetime(save_df['10일선돌파일']).dt.date
+        save_df = save_df[save_df['돌파일_date'] == today].copy()
+        save_df = save_df.drop(columns=['돌파일_date'])
+        after_filter = len(save_df)
+        print(f"\n[실시간 모드] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
 
     # 정렬: 시가총액 내림차순 → 10일선 이탈일 오름차순
     # 시가총액을 숫자로 변환하여 정렬
