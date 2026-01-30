@@ -287,7 +287,7 @@ def get_market_caps(tickers: List[str]) -> dict:
 
 def get_korean_stock_names(tickers: List[str]) -> dict:
     """
-    FinanceDataReader를 사용하여 한국 주식 한글명 조회
+    FinanceDataReader를 사용하여 한국 주식/ETF 한글명 조회
 
     Parameters:
     -----------
@@ -311,6 +311,15 @@ def get_korean_stock_names(tickers: List[str]) -> dict:
 
         # 종목코드-종목명 매핑 생성
         code_to_name = dict(zip(krx_stocks['Code'], krx_stocks['Name']))
+
+        # ETF 리스트도 가져오기 (ETF는 'Symbol' 컬럼 사용)
+        try:
+            etf_list = fdr.StockListing('ETF/KR')
+            if 'Symbol' in etf_list.columns and 'Name' in etf_list.columns:
+                etf_code_to_name = dict(zip(etf_list['Symbol'], etf_list['Name']))
+                code_to_name.update(etf_code_to_name)
+        except Exception:
+            pass
 
         # 각 티커에서 종목코드 추출하여 한글명 매칭
         for ticker in tickers:
