@@ -326,6 +326,44 @@ def filter_volume_surge_breakout(results: list, rvol_threshold: float = 1.5) -> 
     return filtered
 
 
+def filter_below_ma10(results: list) -> pd.DataFrame:
+    """
+    10일선 하회 종목 필터링 (RVOL 무관)
+
+    조건:
+    - condition_1_trend_breakdown = True (10일선 아래)
+
+    Parameters:
+    -----------
+    results : list
+        분석 결과 리스트
+
+    Returns:
+    --------
+    pd.DataFrame : 필터링된 결과
+    """
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results)
+
+    # 디버깅 출력
+    print(f"\n[디버깅] 전체 분석 결과: {len(df)}개")
+
+    # 10일선 아래 종목 (condition_1_trend_breakdown = True)
+    below_ma10 = df['condition_1_trend_breakdown']
+    print(f"[디버깅] 10일선 하회 종목: {below_ma10.sum()}개")
+
+    # 필터링
+    filtered = df[below_ma10].copy()
+
+    # 10일선 이탈일 기준 정렬 (최근 이탈일이 위로)
+    if 'last_ma10_break_below' in filtered.columns:
+        filtered = filtered.sort_values('last_ma10_break_below', ascending=False, na_position='last')
+
+    return filtered
+
+
 def main():
     """메인 함수"""
     print("="*80)
@@ -364,26 +402,61 @@ def main():
     print(f"\n✓ 선택된 모드: {mode_name}")
 
     # ====================================================================
-    # 엑셀 파일에서 티커 로드
+    # 스크리닝 타입 선택
     # ====================================================================
     print("\n" + "="*80)
-    print("티커 리스트 파일 입력")
+    print("스크리닝 타입 선택")
     print("="*80)
+    print("\n[A] 10일선 돌파 + RVOL >= 1.5 (거래량 폭증)")
+    print("    → 10일선 위 + 거래량 폭증 종목")
+    print("\n[B] 10일선 하회만")
+    print("    → 10일선 아래 종목 (RVOL 무관)")
 
-    # 기본 파일 경로
-    default_file = "bloomberg_ticker.xlsx"
-    file_path = default_file
+    while True:
+        screen_type = input("\n스크리닝 타입 선택 (A 또는 B): ").strip().upper()
+        if screen_type in ['A', 'B']:
+            break
+        print("A 또는 B를 입력해주세요.")
 
-    print(f"\n✓ 엑셀 파일: {default_file}")
+    screen_type_name = "10일선 돌파 + RVOL >= 1.5" if screen_type == 'A' else "10일선 하회"
+    print(f"\n✓ 선택된 스크리닝: {screen_type_name}")
 
-    # 엑셀 파일에서 티커 읽기
-    all_tickers = get_tickers_from_excel(file_path)
+    # ====================================================================
+    # 티커 로드 (타입에 따라 다른 방식)
+    # ====================================================================
+    if screen_type == 'A':
+        # 타입 A: 엑셀 파일에서 티커 로드
+        print("\n" + "="*80)
+        print("티커 리스트 파일 입력")
+        print("="*80)
 
-    if not all_tickers:
-        print("\n[에러] 티커를 읽을 수 없습니다")
-        return
+        default_file = "bloomberg_ticker.xlsx"
+        file_path = default_file
 
-    print(f"\n총 {len(all_tickers)}개 종목을 분석합니다.")
+        print(f"\n✓ 엑셀 파일: {default_file}")
+
+        all_tickers = get_tickers_from_excel(file_path)
+
+        if not all_tickers:
+            print("\n[에러] 티커를 읽을 수 없습니다")
+            return
+
+        print(f"\n총 {len(all_tickers)}개 종목을 분석합니다.")
+    else:
+        # 타입 B: 사용자 직접 입력
+        print("\n" + "="*80)
+        print("티커 직접 입력")
+        print("="*80)
+        print("\n티커 형식: 005930 KS, 000660 KS (쉼표로 구분)")
+
+        user_input = input("\n티커 입력: ").strip()
+
+        if not user_input:
+            print("\n[에러] 티커를 입력해주세요")
+            return
+
+        all_tickers = [t.strip() for t in user_input.split(',')]
+        print(f"\n총 {len(all_tickers)}개 종목을 분석합니다.")
 
     # ====================================================================
     # 전종목 분석 실행 (병렬 처리)
@@ -399,13 +472,17 @@ def main():
         return
 
     # ====================================================================
-    # 필터링: 거래량 폭증 (10일선 돌파 + RVOL≥1.5)
+    # 필터링: 타입에 따라 다른 필터 적용
     # ====================================================================
     print("\n" + "="*80)
-    print("스크리닝: 거래량 폭증 종목 (10일선 돌파 + RVOL≥1.5)")
-    print("="*80)
-
-    filtered_df = filter_volume_surge_breakout(results, rvol_threshold=1.5)
+    if screen_type == 'A':
+        print("스크리닝: 거래량 폭증 종목 (10일선 돌파 + RVOL≥1.5)")
+        print("="*80)
+        filtered_df = filter_volume_surge_breakout(results, rvol_threshold=1.5)
+    else:
+        print("스크리닝: 10일선 하회 종목")
+        print("="*80)
+        filtered_df = filter_below_ma10(results)
 
     if filtered_df.empty:
         print("\n조건을 만족하는 종목이 없습니다.")
@@ -542,13 +619,12 @@ def main():
     print("\n" + "="*80)
     print("엑셀 파일 저장 중...")
 
-    # 저장 디렉토리 생성 (모드별)
-    if mode == 1:
-        save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오후] whole-stock-result"
-        file_prefix = "전종목_스크리닝_보고용"
+    # 저장 디렉토리 생성 (모드 및 타입별)
+    save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오후] whole-stock-result"
+    if screen_type == 'A':
+        file_prefix = "전종목_스크리닝_보고용" if mode == 1 else "전종목_스크리닝_실시간"
     else:
-        save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오후] whole-stock-result"
-        file_prefix = "전종목_스크리닝_실시간"
+        file_prefix = "10일선하회_보고용" if mode == 1 else "10일선하회_실시간"
     os.makedirs(save_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -601,36 +677,46 @@ def main():
         rename_dict['rsi'] = 'RSI'
     save_df = save_df.rename(columns=rename_dict)
 
-    # 모드에 따른 필터링
+    # 모드 및 타입에 따른 필터링
     from datetime import date
     today = date.today()
 
-    if mode == 1:
-        # 모드 1 (보고용): 10일선 돌파일이 당일인 종목만
+    if screen_type == 'A':
+        # 타입 A: 10일선 돌파일이 당일인 종목만
         before_filter = len(save_df)
         save_df['돌파일_date'] = pd.to_datetime(save_df['10일선돌파일']).dt.date
         save_df = save_df[save_df['돌파일_date'] == today].copy()
         save_df = save_df.drop(columns=['돌파일_date'])
         after_filter = len(save_df)
-        print(f"\n[필터링] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
-    else:
-        # 모드 2 (실시간): 10일선 돌파일이 당일인 종목만
-        before_filter = len(save_df)
-        save_df['돌파일_date'] = pd.to_datetime(save_df['10일선돌파일']).dt.date
-        save_df = save_df[save_df['돌파일_date'] == today].copy()
-        save_df = save_df.drop(columns=['돌파일_date'])
-        after_filter = len(save_df)
-        print(f"\n[실시간 모드] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
+        mode_str = "보고용" if mode == 1 else "실시간"
+        print(f"\n[{mode_str}] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
 
-    # 정렬: 시가총액 내림차순 → 10일선 이탈일 오름차순
-    # 시가총액을 숫자로 변환하여 정렬
-    save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
-    save_df = save_df.sort_values(
-        by=['시가총액_num', '10일선이탈일'],
-        ascending=[False, True],
-        na_position='last'
-    )
-    save_df = save_df.drop(columns=['시가총액_num'])
+        # 정렬: 시가총액 내림차순 → 10일선 이탈일 오름차순
+        save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
+        save_df = save_df.sort_values(
+            by=['시가총액_num', '10일선이탈일'],
+            ascending=[False, True],
+            na_position='last'
+        )
+        save_df = save_df.drop(columns=['시가총액_num'])
+    else:
+        # 타입 B: 10일선 이탈일이 당일인 종목만
+        before_filter = len(save_df)
+        save_df['이탈일_date'] = pd.to_datetime(save_df['10일선이탈일']).dt.date
+        save_df = save_df[save_df['이탈일_date'] == today].copy()
+        save_df = save_df.drop(columns=['이탈일_date'])
+        after_filter = len(save_df)
+        mode_str = "보고용" if mode == 1 else "실시간"
+        print(f"\n[{mode_str}] 10일선 이탈일이 당일인 종목만: {before_filter}개 → {after_filter}개")
+
+        # 정렬: 시가총액 내림차순
+        save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
+        save_df = save_df.sort_values(
+            by=['시가총액_num'],
+            ascending=[False],
+            na_position='last'
+        )
+        save_df = save_df.drop(columns=['시가총액_num'])
 
     # 엑셀로 저장
     save_df.to_excel(output_filename, index=False, engine='openpyxl')
