@@ -28,96 +28,99 @@ from src import StockAnalyzer
 from src.bloomberg import download_bloomberg_data, get_multiple_security_names, get_market_caps
 
 
-def get_tickers_from_excel(file_path: str) -> list:
+def get_tickers_from_excel(file_path: str) -> tuple:
     """
-    엑셀 파일에서 티커 리스트 읽기
+    엑셀 파일에서 모든 시트의 티커 리스트 읽기
 
-    Parameters:
-    -----------
-    file_path : str
-        엑셀 파일 경로
+    읽는 시트:
+    - 첫 번째 시트 (기존 국내 주식)
+    - 해외ETF 시트 (있으면)
+    - 한국ETF 시트 (있으면)
 
     Returns:
-    --------
-    list : 티커 리스트
-
-    엑셀 파일 형식:
-    - 'bloomberg_ticker' 컬럼에 티커 리스트 (예: 005930 KS, 000660 KQ)
-    - 또는 첫 번째 컬럼에 티커 코드 (예: 005930, 000660)
-    - 두 번째 컬럼에 거래소 코드 (KS 또는 KQ) - 선택사항
+        (all_tickers, etf_tickers_set) 튜플
     """
     import pandas as pd
 
     print(f"\n[엑셀 파일에서 티커 읽기]")
     print(f"  파일: {file_path}")
 
+    ETF_SHEETS = {'해외ETF', '한국ETF'}
+
     try:
-        # 엑셀 파일 읽기
-        df = pd.read_excel(file_path)
+        # 전체 시트 목록 확인
+        xl = pd.ExcelFile(file_path)
+        all_sheets = xl.sheet_names
+        print(f"  시트 목록: {all_sheets}")
 
-        print(f"  ✓ 파일 로드 완료")
-        print(f"  컬럼: {list(df.columns)}")
-        print(f"  행 수: {len(df)}")
+        all_tickers = []
+        etf_tickers = []
 
-        tickers = []
+        def parse_tickers_from_df(df, sheet_name):
+            """DataFrame에서 티커 파싱"""
+            tickers = []
 
-        # bloomberg_ticker 컬럼이 있는지 확인 (우선순위)
-        if 'bloomberg_ticker' in df.columns:
-            print(f"  ✓ 'bloomberg_ticker' 컬럼 발견")
-            target_col = 'bloomberg_ticker'
-        else:
-            # 첫 번째 컬럼 사용
-            target_col = df.columns[0]
-            print(f"  ℹ️  'bloomberg_ticker' 컬럼 없음, 첫 번째 컬럼 사용: {target_col}")
-
-        for idx, row in df.iterrows():
-            ticker_value = str(row[target_col]).strip()
-
-            # 빈 값 무시
-            if not ticker_value or ticker_value == 'nan':
-                continue
-
-            # 이미 "005930 KS" 형식인 경우
-            if ' ' in ticker_value:
-                tickers.append(ticker_value)
+            # 티커 컬럼 찾기 (bloomberg_ticker > 티커 > 첫 번째 컬럼)
+            if 'bloomberg_ticker' in df.columns:
+                target_col = 'bloomberg_ticker'
+            elif '티커' in df.columns:
+                target_col = '티커'
             else:
-                # 티커만 있는 경우, 거래소 코드 추가
-                # 두 번째 컬럼에 거래소 코드가 있는지 확인
-                if len(df.columns) > 1:
-                    exchange = str(row[df.columns[1]]).strip().upper()
-                    if exchange in ['KS', 'KQ']:
-                        tickers.append(f"{ticker_value} {exchange}")
-                    else:
-                        # 거래소 코드가 없으면 6자리 숫자로 판단
-                        if len(ticker_value) == 6 and ticker_value.isdigit():
-                            # 기본값: KS (코스피)
+                target_col = df.columns[0]
+
+            for _, row in df.iterrows():
+                ticker_value = str(row[target_col]).strip()
+
+                if not ticker_value or ticker_value == 'nan':
+                    continue
+
+                # "005930 KS" 또는 "SPY US" 형식
+                if ' ' in ticker_value:
+                    tickers.append(ticker_value)
+                else:
+                    if len(df.columns) > 1:
+                        exchange = str(row[df.columns[1]]).strip().upper()
+                        if exchange in ['KS', 'KQ']:
+                            tickers.append(f"{ticker_value} {exchange}")
+                        elif len(ticker_value) == 6 and ticker_value.isdigit():
                             tickers.append(f"{ticker_value} KS")
                         else:
                             tickers.append(ticker_value)
-                else:
-                    # 컬럼이 하나뿐이면 기본값 사용
-                    if len(ticker_value) == 6 and ticker_value.isdigit():
-                        tickers.append(f"{ticker_value} KS")
                     else:
-                        tickers.append(ticker_value)
+                        if len(ticker_value) == 6 and ticker_value.isdigit():
+                            tickers.append(f"{ticker_value} KS")
+                        else:
+                            tickers.append(ticker_value)
+            return tickers
+
+        # 각 시트별 읽기
+        for sheet in all_sheets:
+            try:
+                df = pd.read_excel(file_path, sheet_name=sheet)
+                tickers = parse_tickers_from_df(df, sheet)
+                all_tickers.extend(tickers)
+                if sheet in ETF_SHEETS:
+                    etf_tickers.extend(tickers)
+                print(f"  OK [{sheet}] {len(tickers)}개 로드")
+            except Exception as e:
+                print(f"  FAIL [{sheet}] 읽기 실패: {e}")
 
         # 중복 제거
-        tickers = list(set(tickers))
+        all_tickers = list(set(all_tickers))
+        etf_tickers_set = set(etf_tickers)
 
-        print(f"\n  총 {len(tickers)}개 티커 로드 완료")
-
-        # 샘플 출력
+        print(f"\n  총 {len(all_tickers)}개 티커 로드 완료 (ETF: {len(etf_tickers_set)}개)")
         print(f"\n  샘플 티커 (처음 5개):")
-        for ticker in tickers[:5]:
+        for ticker in all_tickers[:5]:
             print(f"    - {ticker}")
 
-        return tickers
+        return all_tickers, etf_tickers_set
 
     except Exception as e:
-        print(f"  ✗ 파일 읽기 실패: {e}")
+        print(f"  FAIL 파일 읽기 실패: {e}")
         import traceback
         traceback.print_exc()
-        return []
+        return [], set()
 
 
 def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> dict:
@@ -146,10 +149,24 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> di
             return None
 
         # ================================================================
-        # 데이터 처리 (당일 데이터 포함 - 어제+오늘 돌파 종목 확인 위해)
+        # 모드에 따른 당일 데이터 처리 (start_bloomberg.py와 동일 로직)
         # ================================================================
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
+            df['_date_only'] = df['Date'].dt.date
+
+            from datetime import datetime as _dt, time as _time
+            _now = _dt.now()
+            _today = _now.date()
+            _market_close = _time(15, 30)
+
+            # 모드 1 (보고용): 장중(15:30 이전)에는 당일 미완성 데이터 제외
+            if mode == 1 and _now.time() < _market_close:
+                is_today = df['_date_only'] == _today
+                if is_today.any():
+                    df = df[~is_today].copy()
+
+            df = df.drop(columns=['_date_only'])
 
         if len(df) == 0:
             return None
@@ -435,7 +452,7 @@ def main():
 
         print(f"\n✓ 엑셀 파일: {default_file}")
 
-        all_tickers = get_tickers_from_excel(file_path)
+        all_tickers, etf_tickers_set = get_tickers_from_excel(file_path)
 
         if not all_tickers:
             print("\n[에러] 티커를 읽을 수 없습니다")
@@ -456,6 +473,7 @@ def main():
             return
 
         all_tickers = [t.strip() for t in user_input.split(',')]
+        etf_tickers_set = set()
         print(f"\n총 {len(all_tickers)}개 종목을 분석합니다.")
 
     # ====================================================================
@@ -691,14 +709,32 @@ def main():
         mode_str = "보고용" if mode == 1 else "실시간"
         print(f"\n[{mode_str}] 10일선 돌파일이 당일인 종목만: {before_filter}개 → {after_filter}개")
 
-        # 정렬: 시가총액 내림차순 → 10일선 이탈일 오름차순
-        save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
-        save_df = save_df.sort_values(
-            by=['시가총액_num', '10일선이탈일'],
-            ascending=[False, True],
-            na_position='last'
-        )
-        save_df = save_df.drop(columns=['시가총액_num'])
+        # 돌파일-이탈일 간격 3일 이상 필터 (단기 노이즈·공휴일 제거)
+        before_gap = len(save_df)
+        def _has_valid_gap(row):
+            breakout = row['10일선돌파일']
+            breakdown = row['10일선이탈일']
+            if pd.isna(breakout) or pd.isna(breakdown):
+                return False
+            try:
+                gap = (pd.to_datetime(breakout) - pd.to_datetime(breakdown)).days
+                return gap >= 3
+            except Exception:
+                return False
+        save_df = save_df[save_df.apply(_has_valid_gap, axis=1)].copy()
+        after_gap = len(save_df)
+        print(f"[갭 필터] 돌파일-이탈일 3일 이상: {before_gap}개 → {after_gap}개")
+
+        # 결과 없으면 정렬 생략
+        if not save_df.empty and '시가총액' in save_df.columns:
+            # 정렬: 시가총액 내림차순 → 10일선 이탈일 오름차순
+            save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
+            save_df = save_df.sort_values(
+                by=['시가총액_num', '10일선이탈일'],
+                ascending=[False, True],
+                na_position='last'
+            )
+            save_df = save_df.drop(columns=['시가총액_num'])
     else:
         # 타입 B: 10일선 이탈일이 당일인 종목만
         before_filter = len(save_df)
@@ -709,17 +745,95 @@ def main():
         mode_str = "보고용" if mode == 1 else "실시간"
         print(f"\n[{mode_str}] 10일선 이탈일이 당일인 종목만: {before_filter}개 → {after_filter}개")
 
-        # 정렬: 시가총액 내림차순
-        save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
-        save_df = save_df.sort_values(
-            by=['시가총액_num'],
-            ascending=[False],
-            na_position='last'
-        )
-        save_df = save_df.drop(columns=['시가총액_num'])
+        # 결과 없으면 정렬 생략
+        if not save_df.empty and '시가총액' in save_df.columns:
+            # 정렬: 시가총액 내림차순
+            save_df['시가총액_num'] = pd.to_numeric(save_df['시가총액'], errors='coerce')
+            save_df = save_df.sort_values(
+                by=['시가총액_num'],
+                ascending=[False],
+                na_position='last'
+            )
+            save_df = save_df.drop(columns=['시가총액_num'])
 
-    # 엑셀로 저장
-    save_df.to_excel(output_filename, index=False, engine='openpyxl')
+    # ====================================================================
+    # ETF 현황 시트 준비 (날짜 필터 없이 전체 ETF 결과)
+    # ====================================================================
+    etf_sheet_df = None
+    if etf_tickers_set and results:
+        etf_raw = [r for r in results if r.get('ticker') in etf_tickers_set]
+        if etf_raw:
+            etf_all = pd.DataFrame(etf_raw)
+
+            etf_base_cols = [c for c in [
+                'ticker', 'rsi', 'rvol',
+                'last_ma10_break_above', 'last_ma10_break_below',
+                'trend_detail',
+                'close_price', 'prev_close', 'price_change_percent',
+                'ma10', 'ma_distance_percent'
+            ] if c in etf_all.columns]
+
+            etf_save = etf_all[etf_base_cols].copy()
+
+            # 종목명 / 시가총액 조회
+            etf_ticker_list = etf_all['ticker'].tolist()
+            try:
+                etf_names = get_multiple_security_names(etf_ticker_list)
+            except Exception:
+                etf_names = {t: t for t in etf_ticker_list}
+            try:
+                etf_caps = get_market_caps(etf_ticker_list)
+            except Exception:
+                etf_caps = {t: None for t in etf_ticker_list}
+
+            etf_save.insert(0, '종목명', etf_save['ticker'].map(etf_names))
+            etf_save.insert(1, '티커', etf_save['ticker'])
+            etf_save = etf_save.drop(columns=['ticker'])
+            etf_save.insert(2, '시가총액', etf_save['티커'].map(etf_caps))
+
+            # 10일선 상태 컬럼 추가
+            etf_save.insert(3, '10일선상태',
+                etf_all['condition_1_trend_breakdown'].map(
+                    {False: '10일선 위', True: '10일선 아래'}
+                ).values
+            )
+
+            # 소수점 반올림
+            for col in ['price_change_percent', 'ma_distance_percent', 'rvol']:
+                if col in etf_save.columns:
+                    etf_save[col] = etf_save[col].round(1)
+            if 'rsi' in etf_save.columns:
+                etf_save['rsi'] = etf_save['rsi'].round(1)
+
+            etf_save = etf_save.rename(columns={
+                'rvol': 'RVOL',
+                'rsi': 'RSI',
+                'last_ma10_break_above': '10일선돌파일',
+                'last_ma10_break_below': '10일선이탈일',
+                'trend_detail': '추세상세',
+                'close_price': '현재가',
+                'prev_close': '전일종가',
+                'price_change_percent': '전일비(%)',
+                'ma10': '10일선',
+                'ma_distance_percent': '10일선괴리율(%)'
+            })
+
+            # 정렬: 10일선돌파일 최근순 → 10일선이탈일 오래된순 (모멘텀 강한 ETF 상단)
+            etf_save = etf_save.sort_values(
+                by=['10일선돌파일', '10일선이탈일'],
+                ascending=[False, True],
+                na_position='last'
+            )
+            etf_sheet_df = etf_save
+            print(f"\n[ETF현황] {len(etf_sheet_df)}개 ETF 분석 완료")
+
+    # 엑셀로 저장 (멀티 시트)
+    with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+        save_df.to_excel(writer, sheet_name='스크리닝결과', index=False)
+        if etf_sheet_df is not None and not etf_sheet_df.empty:
+            etf_sheet_df.to_excel(writer, sheet_name='ETF현황', index=False)
+            print(f"  - 스크리닝결과 시트: {len(save_df)}개")
+            print(f"  - ETF현황 시트: {len(etf_sheet_df)}개")
     print(f"\n[저장 완료] {output_filename}")
 
 

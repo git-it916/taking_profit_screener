@@ -344,8 +344,8 @@ class ExitSignalScreener:
 
         # 4. 조건 체크 (10일선 위치 + RVOL)
         result_df['Condition_1_Trend_Breakdown'] = result_df['Close'] < result_df['MA10']  # 10일선 아래
-        result_df['Condition_2_Volume_Confirmation'] = result_df['RVOL'] >= 2.0  # 거래량 폭증
-        result_df['Condition_3_Volume_Watch'] = (result_df['RVOL'] >= 1.5) & (result_df['RVOL'] < 2.0)  # 거래량 관심
+        result_df['Condition_2_Volume_Confirmation'] = result_df['RVOL'] >= 1.5  # 거래량 폭증
+        result_df['Condition_3_Volume_Watch'] = (result_df['RVOL'] >= 1.0) & (result_df['RVOL'] < 1.5)  # 거래량 관심
 
         # 5. 신호 생성 (4가지 신호: BUY, WATCH, SELL, HOLD)
         # BUY: 10일선 위 + RVOL ≥ 2.0 (거래량 폭증 + 상승 추세)

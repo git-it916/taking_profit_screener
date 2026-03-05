@@ -287,7 +287,11 @@ def get_market_caps(tickers: List[str]) -> dict:
 
 def get_korean_stock_names(tickers: List[str]) -> dict:
     """
-    FinanceDataReader를 사용하여 한국 주식/ETF 한글명 조회
+    한국 주식/ETF 한글명 조회
+
+    우선순위:
+    1. bloomberg_ticker.xlsx 한국ETF 시트 (ETF 한글명)
+    2. pykrx (일반 주식 한글명)
 
     Parameters:
     -----------
@@ -298,42 +302,60 @@ def get_korean_stock_names(tickers: List[str]) -> dict:
     --------
     dict : {티커: 한글명} 딕셔너리
     """
-    try:
-        import FinanceDataReader as fdr
-    except ImportError:
-        return {}
-
     result_dict = {}
 
-    try:
-        # KRX 전체 종목 리스트 가져오기 (한글명 포함)
-        krx_stocks = fdr.StockListing('KRX')
-
-        # 종목코드-종목명 매핑 생성
-        code_to_name = dict(zip(krx_stocks['Code'], krx_stocks['Name']))
-
-        # ETF 리스트도 가져오기 (ETF는 'Symbol' 컬럼 사용)
-        try:
-            etf_list = fdr.StockListing('ETF/KR')
-            if 'Symbol' in etf_list.columns and 'Name' in etf_list.columns:
-                etf_code_to_name = dict(zip(etf_list['Symbol'], etf_list['Name']))
-                code_to_name.update(etf_code_to_name)
-        except Exception:
-            pass
-
-        # 각 티커에서 종목코드 추출하여 한글명 매칭
-        for ticker in tickers:
-            # "005930 KS" -> "005930"
-            if ' ' in ticker:
-                code = ticker.split()[0]
-                # 한글명 조회
-                if code in code_to_name:
-                    result_dict[ticker] = code_to_name[code]
-
+    # KS/KQ 티커만 대상
+    ks_tickers = [t for t in tickers if ' KS' in t or ' KQ' in t]
+    if not ks_tickers:
         return result_dict
 
+    # ----------------------------------------------------------------
+    # [1단계] bloomberg_ticker.xlsx 한국ETF 시트에서 ETF 한글명 로드
+    # ----------------------------------------------------------------
+    try:
+        import os
+        import pandas as pd
+        # bloomberg.py가 src/ 안에 있으므로 상위 디렉토리의 파일 참조
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        etf_xlsx = os.path.join(base_dir, 'bloomberg_ticker.xlsx')
+        if os.path.exists(etf_xlsx):
+            xl = pd.ExcelFile(etf_xlsx)
+            for sheet in xl.sheet_names:
+                if 'ETF' in sheet:
+                    df = pd.read_excel(etf_xlsx, sheet_name=sheet)
+                    if '티커' in df.columns and '종목명' in df.columns:
+                        for _, row in df.iterrows():
+                            ticker_val = str(row['티커']).strip()
+                            name_val = str(row['종목명']).strip()
+                            if ticker_val and name_val and ticker_val != 'nan':
+                                result_dict[ticker_val] = name_val
     except Exception:
-        return {}
+        pass
+
+    # ----------------------------------------------------------------
+    # [2단계] pykrx로 일반 주식 한글명 조회 (아직 못 찾은 것만)
+    # ----------------------------------------------------------------
+    remaining = [t for t in ks_tickers if t not in result_dict]
+    if remaining:
+        try:
+            from pykrx import stock as pykrx_stock
+            import warnings
+            warnings.filterwarnings('ignore')
+            for ticker in remaining:
+                code = ticker.split()[0]
+                # 숫자 6자리만 (0008T0 같은 특수 Bloomberg 코드 제외)
+                if not code.isdigit():
+                    continue
+                try:
+                    name = pykrx_stock.get_market_ticker_name(code)
+                    if name and isinstance(name, str) and name.strip():
+                        result_dict[ticker] = name.strip()
+                except Exception:
+                    pass
+        except ImportError:
+            pass
+
+    return result_dict
 
 
 def get_multiple_security_names(tickers: List[str]) -> dict:
