@@ -181,7 +181,7 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> di
         return None
 
 
-def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int = 3, mode: int = 1) -> list:
+def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int = 15, mode: int = 1) -> list:
     """
     병렬 방식으로 여러 티커 분석 (Bloomberg API 병렬 호출)
 
@@ -483,7 +483,7 @@ def main():
     print("전종목 분석 시작 (3개월 데이터)")
     print("="*80)
 
-    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=15, mode=mode)
+    results = analyze_tickers_parallel(all_tickers, period='3M', max_workers=10, mode=mode)
 
     if not results:
         print("\n[에러] 분석 결과가 없습니다")
@@ -781,15 +781,9 @@ def main():
                 etf_names = get_multiple_security_names(etf_ticker_list)
             except Exception:
                 etf_names = {t: t for t in etf_ticker_list}
-            try:
-                etf_caps = get_market_caps(etf_ticker_list)
-            except Exception:
-                etf_caps = {t: None for t in etf_ticker_list}
-
             etf_save.insert(0, '종목명', etf_save['ticker'].map(etf_names))
             etf_save.insert(1, '티커', etf_save['ticker'])
             etf_save = etf_save.drop(columns=['ticker'])
-            etf_save.insert(2, '시가총액', etf_save['티커'].map(etf_caps))
 
             # 10일선 상태 컬럼 추가
             etf_save.insert(3, '10일선상태',

@@ -11,7 +11,11 @@
       "Bash(\"C:\\\\Users\\\\10845\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\nimport pandas as pd\n\nfile_path = r''C:\\\\Users\\\\10845\\\\OneDrive - 이지스자산운용\\\\문서\\\\LGENSOL.xlsx''\ndf = pd.read_excel\\(file_path\\)\n\nprint\\(''=== LGENSOL 최종 데이터 ===''\\)\nprint\\(f''총 행 수: {len\\(df\\)}''\\)\nprint\\(f''\\\\n가장 최근 데이터:''\\)\nprint\\(df.tail\\(1\\)[[''Date'', ''Open'', ''High'', ''Low'', ''Close'', ''Volume'']]\\)\n\nprint\\(f''\\\\n최근 5일:''\\)\nprint\\(df.tail\\(5\\)[[''Date'', ''Close'']]\\)\n\")",
       "Bash(py -3.12 -m pip install:*)",
       "Bash(\"C:\\\\Users\\\\10845\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"\nimport pandas as pd\n\n# 엑셀 파일 읽기\nfile_path = r''c:\\\\Users\\\\Bloomberg\\\\Documents\\\\ssh_project\\\\taking_profit_screener\\\\bloomberg_ticker.xlsx''\ndf = pd.read_excel\\(file_path\\)\n\nprint\\(''=== 엑셀 파일 정보 ===''\\)\nprint\\(f''컬럼명: {list\\(df.columns\\)}''\\)\nprint\\(f''총 행 수: {len\\(df\\)}''\\)\nprint\\(f''\\\\n처음 10개 데이터:''\\)\nprint\\(df.head\\(10\\)\\)\nprint\\(f''\\\\n데이터 타입:''\\)\nprint\\(df.dtypes\\)\n\")",
-      "Bash(ls -la /c/Users/Bloomberg/Documents/ssh_project/taking_profit_screener/database/*.png)"
+      "Bash(ls -la /c/Users/Bloomberg/Documents/ssh_project/taking_profit_screener/database/*.png)",
+      "Bash(MSYS_NO_PATHCONV=1 schtasks //create //tn \"TakingProfitScreener_Daily\" //tr \"C:\\\\\\\\Users\\\\\\\\Bloomberg\\\\\\\\Documents\\\\\\\\ssh_project\\\\\\\\taking_profit_screener\\\\\\\\run_daily.bat\" //sc daily //st 15:31 //f)",
+      "Bash(MSYS_NO_PATHCONV=1 schtasks /create /tn \"TakingProfitScreener_Daily\" /tr \"C:\\\\\\\\Users\\\\\\\\Bloomberg\\\\\\\\Documents\\\\\\\\ssh_project\\\\\\\\taking_profit_screener\\\\\\\\run_daily.bat\" /sc daily /st 15:31 /f)",
+      "Read(//c/Users/Bloomberg/Documents/ssh_project/**)",
+      "Bash(py -3.12 \"c:/Users/Bloomberg/Documents/ssh_project/taking_profit_screener/_verify_brief.py\")"
     ]
   }
 }

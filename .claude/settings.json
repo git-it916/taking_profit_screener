@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py -3.12 -c ' *)",
+      "Bash(py -3.12 \"c:/Users/Bloomberg/Documents/ssh_project/taking_profit_screener/_verify_logic_match.py\")"
+    ]
+  }
+}
