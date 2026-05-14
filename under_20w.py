@@ -3,13 +3,13 @@
 
 py -3.12 under_20w.py
 
-Bloomberg Terminal에서 전종목 데이터를 받아 20주선(≈20주선) 하회 종목을 스크리닝합니다.
+FinanceDataReader로 전종목 데이터를 받아 20주선(≈20주선) 하회 종목을 스크리닝합니다.
 """
 import os
 import sys
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from tabulate import tabulate
 
 # Windows 콘솔 인코딩 설정
@@ -24,7 +24,96 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from src.bloomberg import download_bloomberg_data, get_multiple_security_names, get_market_caps
+import FinanceDataReader as fdr
+
+
+def parse_ticker(ticker: str) -> tuple:
+    """
+    Bloomberg 형식 티커를 (code, market)으로 분리
+
+    "005930 KS" → ("005930", "KS")
+    "AAPL US" → ("AAPL", "US")
+    """
+    parts = ticker.strip().split()
+    if len(parts) >= 2:
+        return (parts[0].upper(), parts[1].upper())
+    return (parts[0].upper(), None)
+
+
+def _period_to_start_date(period: str) -> datetime:
+    period = period.upper().strip()
+    end = datetime.now()
+
+    if period == '1M':
+        return end - timedelta(days=45)
+    if period == '3M':
+        return end - timedelta(days=120)
+    if period == '6M':
+        return end - timedelta(days=210)
+    if period == '1Y':
+        return end - timedelta(days=400)
+    if period == '2Y':
+        return end - timedelta(days=760)
+    if period == '3Y':
+        return end - timedelta(days=1130)
+    return end - timedelta(days=120)
+
+
+def download_data(ticker: str, period: str = '1Y', verbose: bool = True) -> pd.DataFrame:
+    code, market = parse_ticker(ticker)
+    if market not in ('KS', 'KQ', 'US'):
+        if verbose:
+            print(f"  지원하지 않는 시장: {market}")
+        return None
+
+    start = _period_to_start_date(period)
+    end = datetime.now()
+
+    try:
+        df = fdr.DataReader(code, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
+    except Exception as e:
+        if verbose:
+            print(f"  데이터 다운로드 실패: {e}")
+        return None
+
+    if df is None or len(df) == 0:
+        return None
+
+    df = df.reset_index()
+    date_col = None
+    for cand in ('Date', 'date', 'index'):
+        if cand in df.columns:
+            date_col = cand
+            break
+    if date_col and date_col != 'Date':
+        df = df.rename(columns={date_col: 'Date'})
+
+    required = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        if verbose:
+            print(f"  컬럼 부족: {missing}, 사용 가능한 컬럼: {list(df.columns)}")
+        return None
+
+    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None) if df['Date'].dt.tz is not None else pd.to_datetime(df['Date'])
+    return df[required].copy()
+
+
+def get_security_name(ticker: str) -> str:
+    code, market = parse_ticker(ticker)
+    if market in ('KS', 'KQ'):
+        try:
+            from pykrx import stock as pykrx_stock
+            nm = pykrx_stock.get_market_ticker_name(code)
+            if nm and nm.strip():
+                return nm.strip()
+        except Exception:
+            pass
+    return ticker
+
+
+def get_multiple_security_names(tickers: list) -> dict:
+    return {t: get_security_name(t) for t in tickers}
 
 
 def get_tickers_from_excel(file_path: str) -> list:
@@ -93,7 +182,7 @@ def get_tickers_from_excel(file_path: str) -> list:
 
 def analyze_single_ticker(ticker: str, period: str = '1Y', mode: int = 1) -> dict:
     """
-    Bloomberg에서 데이터를 받아 20주선 분석
+    FDR에서 데이터를 받아 20주선 분석
 
     20주선 = 캘린더 기준 140일(20주 × 7일) 내 영업일 종가 평균
 
@@ -101,7 +190,7 @@ def analyze_single_ticker(ticker: str, period: str = '1Y', mode: int = 1) -> dic
         dict: 분석 결과 (20주선 관련 정보 포함)
     """
     try:
-        df = download_bloomberg_data(ticker, period=period, verbose=False)
+        df = download_data(ticker, period=period, verbose=False)
 
         if df is None or len(df) == 0:
             return None
@@ -332,8 +421,8 @@ def main():
     print("="*80)
 
     print("\n⚠️  주의사항:")
-    print("  1. Bloomberg Terminal이 실행 중이어야 합니다")
-    print("  2. Bloomberg에 로그인되어 있어야 합니다")
+    print("  1. 인터넷 연결이 필요합니다")
+    print("  2. FinanceDataReader로 데이터를 가져옵니다")
     print("  3. 전종목 분석은 약 15~20분 소요됩니다 (1년 데이터)")
 
     # ====================================================================
@@ -413,21 +502,12 @@ def main():
         print(f"⚠️  종목명 조회 실패: {e}")
         ticker_names = {ticker: ticker for ticker in filtered_tickers}
 
-    print("\n[시가총액 조회 중...]")
-    try:
-        market_caps = get_market_caps(filtered_tickers)
-    except Exception as e:
-        print(f"⚠️  시가총액 조회 실패: {e}")
-        market_caps = {ticker: None for ticker in filtered_tickers}
+    market_caps = {ticker: None for ticker in filtered_tickers}
 
     # ====================================================================
-    # 시가총액 1000억 이상 필터
+    # 시가총액 필터는 FDR로 직접 조회할 수 없어 생략
     # ====================================================================
-    before_cap = len(filtered_df)
-    filtered_df = filtered_df[filtered_df['ticker'].map(
-        lambda t: pd.to_numeric(market_caps.get(t), errors='coerce')
-    ) >= 100_000_000_000].copy()
-    print(f"\n[시총 필터] 1000억 이상: {before_cap}개 → {len(filtered_df)}개")
+    print("\n[시가총액 필터 생략] FinanceDataReader로 시장 시가총액을 직접 조회할 수 없습니다.")
 
     if filtered_df.empty:
         print("\n시가총액 1000억 이상인 20주선 하회 종목이 없습니다.")

@@ -596,7 +596,7 @@ def main():
         if save_choice == 'y':
             from datetime import datetime as dt
 
-            output_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오전] start-brief-result"
+            output_dir = r"C:\Users\10845\Documents\quant_project\[오전] start-brief-result"
             os.makedirs(output_dir, exist_ok=True)
 
             timestamp = dt.now().strftime("%Y%m%d_%H%M%S")

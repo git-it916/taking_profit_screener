@@ -3,13 +3,13 @@ Taking Profit Screener - 거래량 폭증 종목 스크리닝
 
 py -3.12 whole-stock.py
 
-Bloomberg Terminal에서 전종목 데이터를 받아 분석합니다.
+FinanceDataReader로 전종목 데이터를 받아 분석합니다.
 "거래량 폭증" 종목만 필터링: 10일선 돌파 + RVOL≥1.5
 """
 import os
 import sys
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from tabulate import tabulate
 
 # Windows 콘솔 인코딩 설정
@@ -25,7 +25,96 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 from src import StockAnalyzer
-from src.bloomberg import download_bloomberg_data, get_multiple_security_names, get_market_caps
+import FinanceDataReader as fdr
+
+
+def parse_ticker(ticker: str) -> tuple:
+    """
+    Bloomberg 형식 티커를 (code, market)으로 분리
+
+    "005930 KS" → ("005930", "KS")
+    "AAPL US" → ("AAPL", "US")
+    """
+    parts = ticker.strip().split()
+    if len(parts) >= 2:
+        return (parts[0].upper(), parts[1].upper())
+    return (parts[0].upper(), None)
+
+
+def _period_to_start_date(period: str) -> datetime:
+    period = period.upper().strip()
+    end = datetime.now()
+
+    if period == '1M':
+        return end - timedelta(days=45)
+    if period == '3M':
+        return end - timedelta(days=120)
+    if period == '6M':
+        return end - timedelta(days=210)
+    if period == '1Y':
+        return end - timedelta(days=400)
+    if period == '2Y':
+        return end - timedelta(days=760)
+    if period == '3Y':
+        return end - timedelta(days=1130)
+    return end - timedelta(days=120)
+
+
+def download_data(ticker: str, period: str = '3M', verbose: bool = True) -> pd.DataFrame:
+    code, market = parse_ticker(ticker)
+    if market not in ('KS', 'KQ', 'US'):
+        if verbose:
+            print(f"  지원하지 않는 시장: {market}")
+        return None
+
+    start = _period_to_start_date(period)
+    end = datetime.now()
+
+    try:
+        df = fdr.DataReader(code, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
+    except Exception as e:
+        if verbose:
+            print(f"  데이터 다운로드 실패: {e}")
+        return None
+
+    if df is None or len(df) == 0:
+        return None
+
+    df = df.reset_index()
+    date_col = None
+    for cand in ('Date', 'date', 'index'):
+        if cand in df.columns:
+            date_col = cand
+            break
+    if date_col and date_col != 'Date':
+        df = df.rename(columns={date_col: 'Date'})
+
+    required = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        if verbose:
+            print(f"  컬럼 부족: {missing}, 사용 가능한 컬럼: {list(df.columns)}")
+        return None
+
+    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None) if df['Date'].dt.tz is not None else pd.to_datetime(df['Date'])
+    return df[required].copy()
+
+
+def get_security_name(ticker: str) -> str:
+    code, market = parse_ticker(ticker)
+    if market in ('KS', 'KQ'):
+        try:
+            from pykrx import stock as pykrx_stock
+            nm = pykrx_stock.get_market_ticker_name(code)
+            if nm and nm.strip():
+                return nm.strip()
+        except Exception:
+            pass
+    return ticker
+
+
+def get_multiple_security_names(tickers: list) -> dict:
+    return {t: get_security_name(t) for t in tickers}
 
 
 def get_tickers_from_excel(file_path: str) -> tuple:
@@ -123,14 +212,14 @@ def get_tickers_from_excel(file_path: str) -> tuple:
         return [], set()
 
 
-def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> dict:
+def analyze_from_fdr(ticker: str, period: str = '3M', mode: int = 1) -> dict:
     """
-    Bloomberg에서 데이터를 받아 분석
+    FDR에서 데이터를 받아 분석
 
     Parameters:
     -----------
     ticker : str
-        Bloomberg 티커
+        Bloomberg 형식 티커
     period : str
         데이터 기간 (기본값: '3M' - 3개월)
     mode : int
@@ -142,15 +231,11 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> di
     dict : 분석 결과
     """
     try:
-        # Bloomberg에서 데이터 다운로드 (verbose=False로 메시지 숨김)
-        df = download_bloomberg_data(ticker, period=period, verbose=False)
+        df = download_data(ticker, period=period, verbose=False)
 
         if df is None or len(df) == 0:
             return None
 
-        # ================================================================
-        # 모드에 따른 당일 데이터 처리 (start_bloomberg.py와 동일 로직)
-        # ================================================================
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
             df['_date_only'] = df['Date'].dt.date
@@ -160,7 +245,6 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> di
             _today = _now.date()
             _market_close = _time(15, 30)
 
-            # 모드 1 (보고용): 장중(15:30 이전)에는 당일 미완성 데이터 제외
             if mode == 1 and _now.time() < _market_close:
                 is_today = df['_date_only'] == _today
                 if is_today.any():
@@ -171,19 +255,18 @@ def analyze_from_bloomberg(ticker: str, period: str = '3M', mode: int = 1) -> di
         if len(df) == 0:
             return None
 
-        # 상세 분석
         analyzer = StockAnalyzer()
         result = analyzer.analyze_latest(df, ticker)
 
         return result
 
-    except Exception as e:
+    except Exception:
         return None
 
 
 def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int = 15, mode: int = 1) -> list:
     """
-    병렬 방식으로 여러 티커 분석 (Bloomberg API 병렬 호출)
+    병렬 방식으로 여러 티커 분석 (FinanceDataReader 병렬 호출)
 
     Parameters:
     -----------
@@ -213,14 +296,14 @@ def analyze_tickers_parallel(tickers: list, period: str = '3M', max_workers: int
     print(f"\n총 {len(tickers)}개 종목 분석 시작...")
     print(f"분석 모드: {mode_name}")
     print(f"병렬 처리: {max_workers}개 동시 실행")
-    print(f"⚠️  Bloomberg API 안정성을 위해 {max_workers}개씩 처리합니다.\n")
+    print(f"⚠️  FinanceDataReader를 통해 데이터를 가져옵니다.\n")
 
     start_time = datetime.now()
 
     def analyze_single(ticker):
         """단일 티커 분석 (worker thread에서 실행)"""
         try:
-            result = analyze_from_bloomberg(ticker, period=period, mode=mode)
+            result = analyze_from_fdr(ticker, period=period, mode=mode)
             return (ticker, result, None)
         except Exception as e:
             return (ticker, None, str(e))
@@ -388,8 +471,8 @@ def main():
     print("="*80)
 
     print("\n⚠️  주의사항:")
-    print("  1. Bloomberg Terminal이 실행 중이어야 합니다")
-    print("  2. Bloomberg에 로그인되어 있어야 합니다")
+    print("  1. 인터넷 연결이 필요합니다")
+    print("  2. FinanceDataReader로 데이터를 가져옵니다")
     print("  3. 전종목 분석은 약 10~15분 소요됩니다 (3개월 데이터)")
     print("\n📊 스크리닝 조건:")
     print("  - 10일선 돌파 (10일선 위)")
@@ -521,11 +604,7 @@ def main():
         ticker_names = {ticker: ticker for ticker in filtered_tickers}
 
     print("\n[시가총액 조회 중...]")
-    try:
-        market_caps = get_market_caps(filtered_tickers)
-    except Exception as e:
-        print(f"⚠️  시가총액 조회 실패: {e}")
-        market_caps = {ticker: None for ticker in filtered_tickers}
+    market_caps = {ticker: None for ticker in filtered_tickers}
 
     # ====================================================================
     # 결과 출력
@@ -586,7 +665,7 @@ def main():
         trend_info = row['trend_detail']
         rvol_str = f"RVOL {row['rvol']:.1f}배"
 
-        # 시가총액 포맷팅 (Bloomberg 원본 포맷)
+        # 시가총액 포맷
         if market_cap is not None:
             market_cap_str = f"시총 {market_cap}"
         else:
@@ -609,14 +688,7 @@ def main():
         name = ticker_names.get(ticker, ticker)
         market_cap = market_caps.get(ticker)
 
-        # 시가총액 포맷 (Bloomberg 원본)
-        cap_str = market_cap if market_cap is not None else "N/A"
-
-        print(f"  {name:<15} | 돌파일: {row['last_ma10_break_above']} | RVOL: {row['rvol']:.1f}배 | 시총: {cap_str}")
-
-    print("\n" + "="*80)
-    print("TOP 5 종목 (10일선 이탈일 오래된순)")
-    print("="*80)
+        # 시가총액 포맷
 
     # 10일선 이탈일 오름차순 정렬 (오래된 것이 먼저)
     top5_breakdown = filtered_df.sort_values('last_ma10_break_below', ascending=True, na_position='last').head(5)
@@ -669,7 +741,7 @@ def main():
     save_df.insert(1, '티커', save_df['ticker'])
     save_df = save_df.drop(columns=['ticker'])
 
-    # 시가총액 추가 (Bloomberg 원본 포맷)
+    # 시가총액 추가
     save_df.insert(2, '시가총액', save_df['티커'].map(market_caps))
 
     # 소수점 반올림 (전일비, 10일선괴리율, RVOL, RSI)
