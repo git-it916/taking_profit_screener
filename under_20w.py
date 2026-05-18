@@ -9,7 +9,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time
 from tabulate import tabulate
 
 # Windows 콘솔 인코딩 설정
@@ -59,23 +59,24 @@ def _period_to_start_date(period: str) -> datetime:
     return end - timedelta(days=120)
 
 
-def download_data(ticker: str, period: str = '1Y', verbose: bool = True) -> pd.DataFrame:
-    code, market = parse_ticker(ticker)
-    if market not in ('KS', 'KQ', 'US'):
-        if verbose:
-            print(f"  지원하지 않는 시장: {market}")
-        return None
+def _previous_business_day(day):
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
 
-    start = _period_to_start_date(period)
-    end = datetime.now()
 
-    try:
-        df = fdr.DataReader(code, start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
-    except Exception as e:
-        if verbose:
-            print(f"  데이터 다운로드 실패: {e}")
-        return None
+def _expected_cache_date(mode: int = 1):
+    now = datetime.now()
+    today = now.date()
+    expected = _previous_business_day(today)
 
+    if mode == 1 and expected == today and now.time() < time(15, 30):
+        expected = _previous_business_day(today - timedelta(days=1))
+
+    return expected
+
+
+def _normalize_ohlcv(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
     if df is None or len(df) == 0:
         return None
 
@@ -95,25 +96,249 @@ def download_data(ticker: str, period: str = '1Y', verbose: bool = True) -> pd.D
             print(f"  컬럼 부족: {missing}, 사용 가능한 컬럼: {list(df.columns)}")
         return None
 
-    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None) if df['Date'].dt.tz is not None else pd.to_datetime(df['Date'])
+    date_series = pd.to_datetime(df['Date'])
+    df['Date'] = date_series.dt.tz_localize(None) if date_series.dt.tz is not None else date_series
     return df[required].copy()
 
 
-def get_security_name(ticker: str) -> str:
+def _get_cache_path(ticker: str) -> str:
     code, market = parse_ticker(ticker)
-    if market in ('KS', 'KQ'):
+    cache_dir = os.path.join(current_dir, 'database', 'fdr_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{code}_{market}.csv")
+
+
+def download_data(ticker: str, period: str = '1Y', verbose: bool = True, mode: int = 1) -> pd.DataFrame:
+    code, market = parse_ticker(ticker)
+    if market not in ('KS', 'KQ', 'US'):
+        if verbose:
+            print(f"  지원하지 않는 시장: {market}")
+        return None
+
+    requested_start = _period_to_start_date(period)
+    end = datetime.now()
+    cache_path = _get_cache_path(ticker)
+    cached_df = None
+
+    if os.path.exists(cache_path):
         try:
-            from pykrx import stock as pykrx_stock
-            nm = pykrx_stock.get_market_ticker_name(code)
-            if nm and nm.strip():
-                return nm.strip()
+            cached_df = pd.read_csv(cache_path, parse_dates=['Date'])
+            cached_df = cached_df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        except Exception:
+            cached_df = None
+
+    if cached_df is not None and not cached_df.empty:
+        latest_cached = pd.to_datetime(cached_df['Date']).max()
+        earliest_cached = pd.to_datetime(cached_df['Date']).min()
+        cache_is_fresh = latest_cached.date() >= _expected_cache_date(mode)
+        cache_covers_period = earliest_cached <= requested_start
+        cache_has_20w_history = (latest_cached - earliest_cached).days >= 140
+        if cache_is_fresh and (cache_covers_period or cache_has_20w_history):
+            return cached_df[cached_df['Date'] >= requested_start][['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        if earliest_cached > requested_start:
+            fetch_start = requested_start
+        else:
+            fetch_start = max(requested_start, latest_cached)
+    else:
+        fetch_start = requested_start
+
+    try:
+        new_df = fdr.DataReader(code, fetch_start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d'))
+    except Exception as e:
+        if verbose:
+            print(f"  데이터 다운로드 실패: {e}")
+        new_df = None
+
+    new_df = _normalize_ohlcv(new_df, verbose=verbose)
+
+    frames = [df for df in (cached_df, new_df) if df is not None and not df.empty]
+    if not frames:
+        return None
+
+    df = pd.concat(frames, ignore_index=True)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.drop_duplicates(subset=['Date'], keep='last').sort_values('Date')
+    df.to_csv(cache_path, index=False, encoding='utf-8-sig')
+    return df[df['Date'] >= requested_start][['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].copy()
+
+
+def save_accumulated_workbook(output_filename: str, sheets: dict, dedupe_keys: dict, replace_filters: dict = None) -> None:
+    replace_filters = replace_filters or {}
+    existing_sheets = {}
+    if os.path.exists(output_filename):
+        try:
+            existing_sheets = pd.read_excel(output_filename, sheet_name=None)
+        except Exception as e:
+            print(f"  기존 누적 파일 읽기 실패, 새로 저장합니다: {e}")
+
+    for sheet_name, new_df in sheets.items():
+        new_df = new_df.copy()
+
+        if sheet_name in existing_sheets:
+            existing_df = existing_sheets[sheet_name]
+            filters = replace_filters.get(sheet_name, {})
+            if filters:
+                remove_mask = pd.Series(True, index=existing_df.index)
+                for col, value in filters.items():
+                    if col in existing_df.columns:
+                        remove_mask &= existing_df[col].astype(str) == str(value)
+                    else:
+                        remove_mask &= False
+                existing_df = existing_df[~remove_mask].copy()
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        else:
+            combined_df = new_df
+
+        keys = [key for key in dedupe_keys.get(sheet_name, []) if key in combined_df.columns]
+        if keys:
+            combined_df = combined_df.drop_duplicates(subset=keys, keep='last')
+
+        if '기준일' in combined_df.columns:
+            combined_df['_row_order'] = range(len(combined_df))
+            combined_df['_기준일_sort'] = pd.to_datetime(combined_df['기준일'], errors='coerce')
+            combined_df = combined_df.sort_values(
+                by=['_기준일_sort', '_row_order'],
+                ascending=[False, True],
+                na_position='last'
+            ).drop(columns=['_기준일_sort', '_row_order'])
+
+        existing_sheets[sheet_name] = combined_df
+
+    with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+        for sheet_name, df in existing_sheets.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+def _get_krx_listing() -> pd.DataFrame:
+    cache_path = os.path.join(current_dir, 'database', 'krx_listing_cache.csv')
+    try:
+        listing = fdr.StockListing('KRX')
+        if listing is not None and not listing.empty:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            listing.to_csv(cache_path, index=False, encoding='utf-8-sig')
+            return listing
+    except Exception:
+        pass
+
+    if os.path.exists(cache_path):
+        try:
+            return pd.read_csv(cache_path)
         except Exception:
             pass
-    return ticker
+    return pd.DataFrame()
+
+
+def _get_krx_etf_listing() -> pd.DataFrame:
+    cache_path = os.path.join(current_dir, 'database', 'krx_etf_listing_cache.csv')
+    try:
+        listing = fdr.StockListing('ETF/KR')
+        if listing is not None and not listing.empty:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            listing.to_csv(cache_path, index=False, encoding='utf-8-sig')
+            return listing
+    except Exception:
+        pass
+
+    if os.path.exists(cache_path):
+        try:
+            return pd.read_csv(cache_path)
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
+def _load_ticker_metadata_from_excel(file_path: str) -> dict:
+    metadata = {}
+    if not file_path or not os.path.exists(file_path):
+        return metadata
+
+    try:
+        xl = pd.ExcelFile(file_path)
+        for sheet in xl.sheet_names:
+            df = pd.read_excel(file_path, sheet_name=sheet)
+            ticker_col = None
+            for cand in ('티커', 'bloomberg_ticker'):
+                if cand in df.columns:
+                    ticker_col = cand
+                    break
+            if ticker_col is None:
+                continue
+
+            name_col = '종목명' if '종목명' in df.columns else None
+            for _, row in df.iterrows():
+                ticker = str(row.get(ticker_col, '')).strip()
+                if not ticker or ticker == 'nan':
+                    continue
+                if ' ' not in ticker:
+                    exchange = str(row[df.columns[1]]).strip().upper() if len(df.columns) > 1 else ''
+                    ticker = f"{ticker} {exchange}" if exchange in ('KS', 'KQ', 'US') else ticker
+
+                item = metadata.setdefault(ticker, {})
+                if name_col:
+                    name = row.get(name_col)
+                    if pd.notna(name) and str(name).strip():
+                        item['name'] = str(name).strip()
+    except Exception:
+        pass
+    return metadata
+
+
+def get_security_metadata(tickers: list, excel_metadata: dict = None) -> tuple:
+    excel_metadata = excel_metadata or {}
+    listing = _get_krx_listing()
+    names = {}
+    market_caps = {}
+
+    if not listing.empty and {'Code', 'Name'}.issubset(listing.columns):
+        listing = listing.copy()
+        listing['Code'] = listing['Code'].astype(str).str.upper().str.zfill(6)
+        by_code = listing.drop_duplicates('Code').set_index('Code')
+    else:
+        by_code = pd.DataFrame()
+
+    etf_listing = _get_krx_etf_listing()
+    if not etf_listing.empty and {'Symbol', 'Name'}.issubset(etf_listing.columns):
+        etf_listing = etf_listing.copy()
+        etf_listing['Symbol'] = etf_listing['Symbol'].astype(str).str.upper().str.zfill(6)
+        etf_by_code = etf_listing.drop_duplicates('Symbol').set_index('Symbol')
+    else:
+        etf_by_code = pd.DataFrame()
+
+    for ticker in tickers:
+        code, market = parse_ticker(ticker)
+        excel_name = excel_metadata.get(ticker, {}).get('name')
+        names[ticker] = excel_name or ticker
+        market_caps[ticker] = None
+
+        if market in ('KS', 'KQ') and not by_code.empty and code in by_code.index:
+            row = by_code.loc[code]
+            name = row.get('Name')
+            marcap = row.get('Marcap')
+            if pd.notna(name) and str(name).strip():
+                names[ticker] = str(name).strip()
+            if pd.notna(marcap):
+                market_caps[ticker] = pd.to_numeric(marcap, errors='coerce')
+        elif market in ('KS', 'KQ') and not etf_by_code.empty and code in etf_by_code.index:
+            row = etf_by_code.loc[code]
+            name = row.get('Name')
+            marcap = row.get('MarCap')
+            if pd.notna(name) and str(name).strip():
+                names[ticker] = str(name).strip()
+            if pd.notna(marcap):
+                # FinanceDataReader ETF/KR MarCap is in KRW 100M units.
+                market_caps[ticker] = pd.to_numeric(marcap, errors='coerce') * 100_000_000
+
+    return names, market_caps
+
+
+def get_security_name(ticker: str) -> str:
+    names, _ = get_security_metadata([ticker])
+    return names.get(ticker, ticker)
 
 
 def get_multiple_security_names(tickers: list) -> dict:
-    return {t: get_security_name(t) for t in tickers}
+    names, _ = get_security_metadata(tickers)
+    return names
 
 
 def get_tickers_from_excel(file_path: str) -> list:
@@ -190,7 +415,7 @@ def analyze_single_ticker(ticker: str, period: str = '1Y', mode: int = 1) -> dic
         dict: 분석 결과 (20주선 관련 정보 포함)
     """
     try:
-        df = download_data(ticker, period=period, verbose=False)
+        df = download_data(ticker, period=period, verbose=False, mode=mode)
 
         if df is None or len(df) == 0:
             return None
@@ -330,7 +555,7 @@ def analyze_single_ticker(ticker: str, period: str = '1Y', mode: int = 1) -> dic
         return None
 
 
-def analyze_tickers_parallel(tickers: list, period: str = '1Y', max_workers: int = 15, mode: int = 1) -> list:
+def analyze_tickers_parallel(tickers: list, period: str = '1Y', max_workers: int = 30, mode: int = 1) -> list:
     """병렬 방식으로 여러 티커 분석"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from threading import Lock
@@ -455,6 +680,7 @@ def main():
 
     default_file = "bloomberg_ticker.xlsx"
     all_tickers = get_tickers_from_excel(default_file)
+    excel_metadata = _load_ticker_metadata_from_excel(default_file)
 
     if not all_tickers:
         print("\n[에러] 티커를 읽을 수 없습니다")
@@ -469,7 +695,7 @@ def main():
     print("전종목 분석 시작 (1년 데이터 - 20주선 계산용)")
     print("="*80)
 
-    results = analyze_tickers_parallel(all_tickers, period='1Y', max_workers=15, mode=mode)
+    results = analyze_tickers_parallel(all_tickers, period='1Y', max_workers=30, mode=mode)
 
     if not results:
         print("\n[에러] 분석 결과가 없습니다")
@@ -497,17 +723,11 @@ def main():
     filtered_tickers = filtered_df['ticker'].tolist()
 
     try:
-        ticker_names = get_multiple_security_names(filtered_tickers)
+        ticker_names, market_caps = get_security_metadata(filtered_tickers, excel_metadata)
     except Exception as e:
-        print(f"⚠️  종목명 조회 실패: {e}")
+        print(f"⚠️  종목명/시가총액 조회 실패: {e}")
         ticker_names = {ticker: ticker for ticker in filtered_tickers}
-
-    market_caps = {ticker: None for ticker in filtered_tickers}
-
-    # ====================================================================
-    # 시가총액 필터는 FDR로 직접 조회할 수 없어 생략
-    # ====================================================================
-    print("\n[시가총액 필터 생략] FinanceDataReader로 시장 시가총액을 직접 조회할 수 없습니다.")
+        market_caps = {ticker: None for ticker in filtered_tickers}
 
     if filtered_df.empty:
         print("\n시가총액 1000억 이상인 20주선 하회 종목이 없습니다.")
@@ -608,12 +828,11 @@ def main():
     print("\n" + "="*80)
     print("엑셀 파일 저장 중...")
 
-    save_dir = r"C:\Users\Bloomberg\Documents\ssh_project\[오후] whole-stock-result"
-    file_prefix = "20주선하회_보고용" if mode == 1 else "20주선하회_실시간"
+    save_dir = r"C:\Users\10845\Documents\quant_project\[오후] under_20w"
     os.makedirs(save_dir, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = os.path.join(save_dir, f"{file_prefix}_{timestamp}.xlsx")
+    output_date = datetime.now().strftime("%Y%m%d")
+    output_filename = os.path.join(save_dir, f"under_20w_{output_date}.xlsx")
 
     # 저장용 DataFrame 생성
     base_columns = [
@@ -634,6 +853,7 @@ def main():
     # 종목명과 시가총액 추가
     save_df.insert(0, '종목명', save_df['ticker'].map(ticker_names))
     save_df.insert(1, '티커', save_df['ticker'])
+    save_df['종목명'] = save_df['종목명'].fillna(save_df['티커'])
     save_df = save_df.drop(columns=['ticker'])
     save_df.insert(2, '시가총액', save_df['티커'].map(market_caps))
 
@@ -650,17 +870,17 @@ def main():
     # 컬럼명 한글화
     rename_dict = {
         'rvol': 'RVOL',
-        'last_ma20w_break_below': '20주선이탈일',
-        'last_ma20w_break_above': '20주선돌파일',
+        'last_ma20w_break_below': '100일선이탈일',
+        'last_ma20w_break_above': '100일선돌파일',
         'days_below_ma20w': '하회일수',
         'trend_detail': '추세상세',
         'close_price': '현재가',
         'prev_close': '전일종가',
         'price_change_percent': '전일비(%)',
-        'ma20w': '20주선',
-        'ma20w_distance_percent': '20주선괴리율(%)',
+        'ma20w': '100일선(20주선)',
+        'ma20w_distance_percent': '100일선괴리율',
         'ma10': '10일선',
-        'ma10_distance_percent': '10일선괴리율(%)',
+        'ma10_distance_percent': '10일선괴리율',
     }
     if 'rsi' in save_df.columns:
         rename_dict['rsi'] = 'RSI'
@@ -672,7 +892,7 @@ def main():
     cutoff = today - timedelta(days=5)
     cutoff_ts = pd.Timestamp(cutoff)
     before_filter = len(save_df)
-    save_df['이탈일_date'] = pd.to_datetime(save_df['20주선이탈일'], errors='coerce')
+    save_df['이탈일_date'] = pd.to_datetime(save_df['100일선이탈일'], errors='coerce')
     save_df = save_df[save_df['이탈일_date'] >= cutoff_ts].copy()
     save_df = save_df.drop(columns=['이탈일_date'])
     after_filter = len(save_df)
@@ -682,8 +902,8 @@ def main():
     # 이탈일-돌파일 간격 5일 이상 필터 (단기 노이즈 제거)
     before_gap = len(save_df)
     def _has_valid_gap(row):
-        breakdown = row['20주선이탈일']
-        breakout = row['20주선돌파일']
+        breakdown = row['100일선이탈일']
+        breakout = row['100일선돌파일']
         if pd.isna(breakdown) or pd.isna(breakout):
             return False
         try:
@@ -702,6 +922,18 @@ def main():
         save_df = save_df.drop(columns=['시가총액_num'])
 
     # 엑셀 저장
+    final_columns = [
+        '종목명', '티커', '시가총액', 'RVOL', 'RSI',
+        '100일선이탈일', '100일선돌파일', '하회일수', '추세상세',
+        '현재가', '전일종가', '전일비(%)',
+        '100일선(20주선)', '100일선괴리율',
+        '10일선', '10일선괴리율'
+    ]
+    for col in final_columns:
+        if col not in save_df.columns:
+            save_df[col] = pd.NA
+    save_df = save_df[final_columns]
+
     with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
         save_df.to_excel(writer, sheet_name='스크리닝결과', index=False)
     print(f"\n[저장 완료] {output_filename}")
