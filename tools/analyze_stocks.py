@@ -111,7 +111,7 @@ def analyze_multiple_stocks():
 
         # SELL 신호
         sell_stocks = results_df[results_df['signal'] == 'SELL']
-        print(f"\n[강력 매도 신호] {len(sell_stocks)}개 종목:")
+        print(f"\n[profit taking.] {len(sell_stocks)}개 종목:")
         if len(sell_stocks) > 0:
             for _, stock in sell_stocks.iterrows():
                 print(f"  • {stock['ticker']}: {stock['signal_category']}")

@@ -208,7 +208,7 @@ print('\n[5] 정렬 로직')
 print('-'*80)
 
 sort_checks = [
-    ('카테고리 순서 dict',  "{'강력 매도 신호': 0, 'profit taking': 1, 'upside': 2}"),
+    ('카테고리 순서 dict',  "{'profit taking.': 0, 'profit taking': 1, 'upside': 2}"),
     ('이탈일 내림 + 돌파일 오름', "['카테고리_순서', '10일선이탈일', '10일선돌파일']"),
     ('ascending=[True, False, True]', '[True, False, True]'),
 ]
@@ -271,7 +271,7 @@ else:
 
             # 정렬 검증: 카테고리 순서 (강력매도 → profit taking → upside)
             if '카테고리' in df_all.columns and len(df_all) > 1:
-                cat_order_map = {'강력 매도 신호': 0, 'profit taking': 1, 'upside': 2}
+                cat_order_map = {'profit taking.': 0, 'profit taking': 1, 'upside': 2}
                 df_all['_cat_order'] = df_all['카테고리'].map(cat_order_map)
                 is_sorted = df_all['_cat_order'].is_monotonic_increasing
                 print(f'    ✓ 카테고리 순서 정렬: {is_sorted}')
@@ -292,7 +292,7 @@ else:
             today = date.today()
             cutoff = today - timedelta(days=5)
 
-            for cat in ['강력 매도 신호', 'profit taking']:
+            for cat in ['profit taking.', 'profit taking']:
                 sub = df_all[df_all['카테고리'] == cat] if '카테고리' in df_all.columns else pd.DataFrame()
                 if len(sub) == 0:
                     print(f'    [{cat}] 항목 없음 (필터 결과 0개)')
@@ -311,7 +311,7 @@ else:
                 print(f'    ✓ [{cat}] {len(sub)}건 중 필터 위반: {violations}건')
 
         # 카테고리별 시트 vs 전체 시트의 카테고리별 행 수 일치
-        for sheet, cat in [('강력매도신호', '강력 매도 신호'), ('profit taking', 'profit taking'), ('upside', 'upside')]:
+        for sheet, cat in [('강력매도신호', 'profit taking.'), ('profit taking', 'profit taking'), ('upside', 'upside')]:
             if sheet in xl.sheet_names:
                 cnt_sheet = len(pd.read_excel(xl, sheet_name=sheet))
                 cnt_all = (df_all['카테고리'] == cat).sum() if '카테고리' in df_all.columns else 0

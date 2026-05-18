@@ -204,7 +204,7 @@ def create_summary_chart(results: List[Dict], save_path: str = None) -> str:
         '총 종목 수': [len(df)],
         '하락세': [len(df[df['current_position'] == 'below'])],
         '상승세': [len(df[df['current_position'] == 'above'])],
-        '강력 매도 신호': [len(df[df['signal'] == 'SELL'])],
+        'profit taking.': [len(df[df['signal'] == 'SELL'])],
         '거래량 폭증': [len(df[df['condition_2_volume_confirmation']])],
     }
 

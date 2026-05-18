@@ -93,7 +93,7 @@ def main():
         # SELL 신호 종목만 필터링
         sell_stocks = [r for r in results if r['signal'] == 'SELL']
         if sell_stocks:
-            print(f"\n\n주의: {len(sell_stocks)}개 종목에서 강력 매도 신호 발견!")
+            print(f"\n\n주의: {len(sell_stocks)}개 종목에서 profit taking. 발견!")
             for stock in sell_stocks:
                 print(f"  - {stock['ticker']}: {stock['reasoning']}")
 

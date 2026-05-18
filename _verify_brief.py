@@ -266,7 +266,7 @@ surge_stocks = results_df[
     results_df['condition_2_volume_confirmation']
 ]
 print(f'  카테고리 분포:')
-print(f'    강력 매도 신호: {len(sell_stocks)}개')
+print(f'    profit taking.: {len(sell_stocks)}개')
 print(f'    profit taking: {len(caution_stocks)}개')
 print(f'    upside: {len(surge_stocks)}개')
 

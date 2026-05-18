@@ -433,7 +433,7 @@ def print_analysis_results(results):
 
     # SELL 신호 (10일선 하회 + 거래량 폭증)
     sell_stocks = results_df[results_df['signal'] == 'SELL']
-    print(f"\n[강력 매도 신호] {len(sell_stocks)}개 종목 (10일선 하회 + 거래량 폭증):")
+    print(f"\n[profit taking.] {len(sell_stocks)}개 종목 (10일선 하회 + 거래량 폭증):")
     if len(sell_stocks) > 0:
         for _, stock in sell_stocks.iterrows():
             print(f"  - {stock['ticker']}: {stock['reasoning']}")

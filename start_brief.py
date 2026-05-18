@@ -522,7 +522,7 @@ def main():
 
         # SELL 신호 (10일선 하회 + 거래량 폭증)
         sell_stocks = results_df[results_df['signal'] == 'SELL']
-        print(f"\n[강력 매도 신호] {len(sell_stocks)}개 종목 (10일선 하회 + 거래량 폭증):")
+        print(f"\n[profit taking.] {len(sell_stocks)}개 종목 (10일선 하회 + 거래량 폭증):")
         print("-" * 80)
         if len(sell_stocks) > 0:
             for _, stock in sell_stocks.iterrows():
@@ -608,14 +608,14 @@ def main():
             # 3가지 카테고리별로 데이터 생성
             # ====================================================================
 
-            # [1] 강력 매도 신호 (10일선 하회 + 거래량 폭증)
+            # [1] profit taking. (10일선 하회 + 거래량 폭증)
             sell_stocks = results_df[results_df['signal'] == 'SELL'].copy()
             sell_data = []
             for _, stock in sell_stocks.iterrows():
                 ticker = stock['ticker']
                 security_name = ticker_names.get(ticker, ticker)
                 sell_data.append({
-                    '카테고리': '강력 매도 신호',
+                    '카테고리': 'profit taking.',
                     '종목명': security_name,
                     '티커': ticker,
                     'RVOL': stock['rvol'],
@@ -726,7 +726,7 @@ def main():
             surge_data_filtered = surge_data  # 10일선 위 종목은 필터 제외
 
             print(f"\n[필터링] 10일선 이탈일 기준 (최근 5일 이내 + 돌파-이탈 차이 3일 이상)")
-            print(f"  - 강력 매도 신호: {len(sell_data)}개 → {len(sell_data_filtered)}개")
+            print(f"  - profit taking.: {len(sell_data)}개 → {len(sell_data_filtered)}개")
             print(f"  - 주의 필요: {len(caution_data)}개 → {len(caution_data_filtered)}개")
             print(f"  - 거래량 폭증: {len(surge_data)}개 (필터링 제외)")
 
@@ -740,7 +740,7 @@ def main():
 
             # 정렬
             if '카테고리' in df_to_save.columns:
-                category_order = {'강력 매도 신호': 0, 'profit taking': 1, 'upside': 2}
+                category_order = {'profit taking.': 0, 'profit taking': 1, 'upside': 2}
                 df_to_save['카테고리_순서'] = df_to_save['카테고리'].map(category_order).fillna(99)
 
                 if '10일선돌파일' in df_to_save.columns and '10일선이탈일' in df_to_save.columns:
@@ -789,7 +789,7 @@ def main():
 
             print(f"\n✓ Excel 저장 완료: {output_path}")
             print(f"  - 전체 (필터링 후): {len(df_to_save)}개")
-            print(f"  - 강력 매도 신호: {len(sell_data)}개")
+            print(f"  - profit taking.: {len(sell_data)}개")
             print(f"  - profit taking: {len(caution_data)}개")
             print(f"  - upside: {len(surge_data)}개")
 
