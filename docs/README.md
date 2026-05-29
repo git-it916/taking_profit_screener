@@ -5,8 +5,35 @@ IGIS Asset Management | 최종 업데이트: 2026-02-25
 
 ---
 
+## 0. Bloomberg 미사용 버전 요약
+
+아래 3개 스크립트는 실행 시 **Bloomberg API/Terminal을 사용하지 않는 버전**입니다. `whole-stock.py`와 `under_20w.py`는 FinanceDataReader와 로컬 캐시를 사용하고, `whole-stock-2.py`는 사전에 생성된 `전종목_수급.xlsx` 파일을 읽어 스코어링합니다.
+
+| 스크립트 | 목적 | 입력 데이터 | 핵심 로직 | 출력 위치 |
+|----------|------|-------------|-----------|-----------|
+| `whole-stock.py` | 전종목 10일선 돌파/이탈 스크리닝 | `bloomberg_ticker.xlsx`, FinanceDataReader, `database/fdr_cache` | 10일선 위치, RVOL, RSI, 돌파일/이탈일 계산. 타입 A는 10일선 돌파 + RVOL 1.5 이상, 타입 B는 10일선 이탈 종목 확인 | `C:\Users\10845\Documents\quant_project\[오후] whole-stock\whole-stock_YYYYMMDD.xlsx` |
+| `whole-stock-2.py` | 전종목 수급 기반 종합 스코어링 | `C:\Users\10845\Documents\quant_project\전종목_수급.xlsx`의 `Sheet1` | 종가, 거래대금 5/20일 평균, 기관/외국인 5/20일 순매수 데이터를 사용. 가격 35%, 수급 45%, 거래대금 20% 가중치로 종합스코어와 등급 산출 | `C:\Users\10845\Documents\quant_project\[오후] whole-stock-2\전종목_수급_스코어링_YYYYMMDD.xlsx` |
+| `under_20w.py` | 20주선 하회 종목 스크리닝 | `bloomberg_ticker.xlsx`, FinanceDataReader, `database/fdr_cache` | 캘린더 기준 약 140일 구간으로 20주선 계산. 20주선 하회 및 최근 이탈 종목을 선별하고 시가총액 1,000억 이상 필터 적용 | `C:\Users\10845\Documents\quant_project\[오후] under_20w\under_20w_YYYYMMDD.xlsx` |
+
+실행 예시:
+
+```powershell
+py -3.12 whole-stock.py
+py -3.12 whole-stock-2.py
+py -3.12 under_20w.py
+```
+
+운영 메모:
+
+- `bloomberg_ticker.xlsx`는 티커 목록 입력 파일로만 사용됩니다. 위 스크립트 실행 과정에서 Bloomberg API를 호출하지 않습니다.
+- `whole-stock-2.py`는 `전종목_수급.xlsx`가 먼저 준비되어 있어야 하며, 현재는 `Sheet1`을 고정으로 읽습니다.
+- FinanceDataReader 기반 스크립트는 `database/fdr_cache`를 재사용하므로, 최초 실행 또는 캐시 갱신 시 시간이 더 걸릴 수 있습니다.
+
+---
+
 ## 목차
 
+0. [Bloomberg 미사용 버전 요약](#0-bloomberg-미사용-버전-요약)
 1. [도구 개요](#1-도구-개요)
 2. [핵심 지표 설명](#2-핵심-지표-설명)
 3. [신호 해석 가이드](#3-신호-해석-가이드)
