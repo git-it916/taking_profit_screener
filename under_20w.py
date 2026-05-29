@@ -26,6 +26,8 @@ if current_dir not in sys.path:
 
 import FinanceDataReader as fdr
 
+MAX_DAYS_BELOW_MA20W_INCLUDED = 3
+
 
 def parse_ticker(ticker: str) -> tuple:
     """
@@ -630,7 +632,11 @@ def filter_below_ma20w(results: list) -> pd.DataFrame:
     below = df['below_ma20w'] == True
     print(f"[디버깅] 20주선 하회 종목: {below.sum()}개")
 
-    filtered = df[below].copy()
+    days_below = df.get('days_below_ma20w', 0)
+    recent_breakdown = days_below <= MAX_DAYS_BELOW_MA20W_INCLUDED
+    print(f"[디버깅] 하회일수 4일 이상 제외: {(below & ~recent_breakdown).sum()}개")
+
+    filtered = df[below & recent_breakdown].copy()
 
     # 20주선 이탈일 기준 정렬 (최근 이탈일이 위로)
     if 'last_ma20w_break_below' in filtered.columns:
