@@ -248,6 +248,7 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
 
     wb = writer.book
     ws = wb.create_sheet("전종목 보고서", 0)
+    ws.sheet_view.showGridLines = False
 
     color_navy = "1F3864"
     color_blue = "2E75B6"
@@ -266,6 +267,7 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
         return Font(bold=bold, color=color, size=size, name="맑은 고딕")
 
     center = Alignment(horizontal="center", vertical="center")
+    left_center = Alignment(horizontal="left", vertical="center")
     border = Border(
         left=Side(style="thin", color="BFBFBF"),
         right=Side(style="thin", color="BFBFBF"),
@@ -274,28 +276,37 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
     )
 
     for col, width in {
-        1: 3, 2: 5, 3: 16, 4: 18, 5: 11, 6: 9, 7: 10, 8: 10, 9: 12, 10: 11, 11: 12, 12: 12,
-        14: 18, 15: 10, 16: 10,
+        1: 2, 2: 6, 3: 14, 4: 18, 5: 11, 6: 9, 7: 10, 8: 10, 9: 12, 10: 11, 11: 12, 12: 12,
+        13: 3, 14: 18, 15: 10, 16: 10,
     }.items():
         ws.column_dimensions[get_column_letter(col)].width = width
 
-    ws.row_dimensions[1].height = 8
-    ws.row_dimensions[2].height = 38
-    ws.row_dimensions[3].height = 20
+    ws.row_dimensions[1].height = 6
+    ws.row_dimensions[2].height = 42
+    ws.row_dimensions[3].height = 23
+    ws.row_dimensions[4].height = 8
+    ws.row_dimensions[5].height = 8
     ws.row_dimensions[6].height = 28
     ws.row_dimensions[7].height = 22
+    ws.row_dimensions[8].height = 10
+    ws.row_dimensions[9].height = 8
+
+    def style_range(cell_range: str, fill_color: str, font_obj: Font, alignment= None) -> None:
+        alignment = alignment or center
+        for row in ws[cell_range]:
+            for cell in row:
+                cell.fill = fill(fill_color)
+                cell.font = font_obj
+                cell.alignment = alignment
+                cell.border = border
 
     ws.merge_cells("B2:L2")
+    style_range("B2:L2", color_navy, font(True, color_white, 18))
     ws["B2"] = "전종목 수급 스코어링 보고서"
-    ws["B2"].font = font(True, color_white, 18)
-    ws["B2"].fill = fill(color_navy)
-    ws["B2"].alignment = center
 
     ws.merge_cells("B3:L3")
+    style_range("B3:L3", color_blue, font(False, color_white, 10))
     ws["B3"] = f"기준일: {ref_date}  |  분석 대상: {len(final):,}개 종목  |  가격/수급/거래대금: {PRICE_WEIGHT:.0%}/{SUPPLY_WEIGHT:.0%}/{VALUE_WEIGHT:.0%}"
-    ws["B3"].font = font(False, color_white, 10)
-    ws["B3"].fill = fill(color_blue)
-    ws["B3"].alignment = center
 
     grade_counts = {g: 0 for g in ["A", "B", "C", "D", "F"]}
     for grade, count in final["등급"].value_counts().items():
@@ -315,25 +326,28 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
         col = 2 + idx * 2
         ws.merge_cells(start_row=6, start_column=col, end_row=6, end_column=col + 1)
         ws.merge_cells(start_row=7, start_column=col, end_row=7, end_column=col + 1)
+        for cell in ws.iter_rows(min_row=6, max_row=6, min_col=col, max_col=col + 1):
+            for c in cell:
+                c.fill = fill(color)
+                c.font = font(True, color_white, 9)
+                c.alignment = center
+                c.border = border
+        for cell in ws.iter_rows(min_row=7, max_row=7, min_col=col, max_col=col + 1):
+            for c in cell:
+                c.fill = fill(color_gray)
+                c.font = font(True, color, 18)
+                c.alignment = center
+                c.border = border
 
         lc = ws.cell(row=6, column=col)
         lc.value = label
-        lc.font = font(True, color_white, 9)
-        lc.fill = fill(color)
-        lc.alignment = center
-        lc.border = border
 
         vc = ws.cell(row=7, column=col)
         vc.value = value
-        vc.font = font(True, color, 18)
-        vc.fill = fill(color_gray)
-        vc.alignment = center
-        vc.border = border
 
     ws.merge_cells("B10:L10")
+    style_range("B10:L10", color_blue, font(True, color_white, 11), left_center)
     ws["B10"] = "[Top] 추천종목  (종합스코어 65점 이상)"
-    ws["B10"].font = font(True, color_white, 11)
-    ws["B10"].fill = fill(color_blue)
     ws["B10"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
     headers = ["순위", "코드", "종목명", "종합", "등급", "가격", "수급", "거래대금", "5일수익률", "20일수익률", "기관/외인"]
@@ -396,6 +410,8 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
             cell.fill = fill(color_navy if row == chart_row else color_light)
             cell.alignment = center
             cell.border = border
+    ws.column_dimensions["N"].hidden = True
+    ws.column_dimensions["O"].hidden = True
 
     pie = PieChart()
     pie.title = "전종목 스코어 분포"
@@ -501,8 +517,6 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str) -> Pat
         for sheet_name in ["추천종목", "A등급", "전체", "외국인순매수TOP", "기관순매수TOP", "거래대금TOP", "요약"]:
             _format_table_sheet(writer.sheets[sheet_name])
 
-    csv_output = output.with_suffix(".csv")
-    final.to_csv(csv_output, index=False, encoding="utf-8-sig")
     return output
 
 
@@ -519,7 +533,6 @@ def main() -> None:
     print("\n[TOP 20]")
     print(scored[top_cols].head(20).to_string(index=False))
     print(f"\n저장 완료: {output}")
-    print(f"CSV 저장 완료: {output.with_suffix('.csv')}")
 
 
 if __name__ == "__main__":
