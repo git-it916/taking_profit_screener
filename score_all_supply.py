@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+import importlib.util
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -19,13 +21,18 @@ import pandas as pd
 
 
 BASE_DIR = Path(r"C:\Users\10845\Documents\quant_project")
+CURRENT_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / "전종목_수급.xlsx"
 OUTPUT_DIR = BASE_DIR / "[오후] whole-stock-2"
+TICKER_FILE = CURRENT_DIR / "bloomberg_ticker.xlsx"
 SOURCE_SHEET = "Sheet1"
 
 PRICE_WEIGHT = 0.35
 SUPPLY_WEIGHT = 0.45
 VALUE_WEIGHT = 0.20
+FDR_LOOKBACK_DAYS = 80
+FDR_MAX_WORKERS = 16
+ETF_MAX_WORKERS = 16
 
 
 ITEM_MAP = {
@@ -37,6 +44,14 @@ ITEM_MAP = {
     "순매수대금(외국인계)(5일합산)(만원)": "foreign_net_5d",
     "순매수대금(외국인계)(20일합산)(만원)": "foreign_net_20d",
 }
+
+
+def _load_whole_stock_module():
+    module_path = CURRENT_DIR / "whole-stock.py"
+    spec = importlib.util.spec_from_file_location("whole_stock_base", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def normalize_score(series: pd.Series, higher_is_better: bool = True) -> pd.Series:
@@ -153,12 +168,165 @@ def add_time_series_features(df: pd.DataFrame) -> pd.DataFrame:
         lambda s: (s > 0).rolling(20, min_periods=5).mean() * 100
     )
     df["turnover_rvol"] = df["turnover_avg_5d"] / df["turnover_avg_20d"]
+    df["price_data_date"] = df["date"]
+    df["price_data_source"] = "Excel"
+    df["today_price_applied"] = False
+    df["volume"] = np.nan
+    df["turnover"] = np.nan
+    df["volume_avg_5d"] = np.nan
+    df["volume_avg_20d"] = np.nan
     return df.replace([np.inf, -np.inf], np.nan)
 
 
+def _fetch_fdr_price_metrics(code: str) -> dict | None:
+    try:
+        import FinanceDataReader as fdr
+
+        numeric_code = str(code).replace("A", "", 1)
+        end = datetime.now()
+        start = end - timedelta(days=FDR_LOOKBACK_DAYS)
+        df = fdr.DataReader(numeric_code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        if df is None or df.empty:
+            return None
+
+        df = df.reset_index()
+        date_col = "Date" if "Date" in df.columns else df.columns[0]
+        df = df.rename(columns={date_col: "date"})
+        required = {"date", "Close", "Volume"}
+        if not required.issubset(df.columns):
+            return None
+
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
+        df = df.dropna(subset=["date", "Close", "Volume"]).sort_values("date")
+        if df.empty:
+            return None
+
+        close = df["Close"]
+        volume = df["Volume"]
+        turnover = close * volume
+        latest = df.iloc[-1]
+        latest_turnover = float(turnover.iloc[-1])
+
+        def pct_change(days: int):
+            if len(close) <= days or pd.isna(close.iloc[-days - 1]) or close.iloc[-days - 1] == 0:
+                return np.nan
+            return (close.iloc[-1] / close.iloc[-days - 1] - 1) * 100
+
+        def tail_mean(series: pd.Series, days: int, min_periods: int):
+            if len(series.dropna()) < min_periods:
+                return np.nan
+            return float(series.tail(days).mean())
+
+        turnover_avg_5d = tail_mean(turnover, 5, 3)
+        turnover_avg_20d = tail_mean(turnover, 20, 10)
+        volume_avg_5d = tail_mean(volume, 5, 3)
+        volume_avg_20d = tail_mean(volume, 20, 10)
+
+        return {
+            "code": code,
+            "price_data_date": latest["date"],
+            "close": float(latest["Close"]),
+            "volume": float(latest["Volume"]),
+            "turnover": latest_turnover,
+            "turnover_avg_5d": turnover_avg_5d,
+            "turnover_avg_20d": turnover_avg_20d,
+            "volume_avg_5d": volume_avg_5d,
+            "volume_avg_20d": volume_avg_20d,
+            "turnover_rvol": latest_turnover / turnover_avg_20d if pd.notna(turnover_avg_20d) and turnover_avg_20d else np.nan,
+            "ret_5d": pct_change(5),
+            "ret_20d": pct_change(20),
+            "ma5": tail_mean(close, 5, 3),
+            "ma10": tail_mean(close, 10, 5),
+            "ma20": tail_mean(close, 20, 10),
+        }
+    except Exception:
+        return None
+
+
+def apply_fdr_price_overlay(df: pd.DataFrame) -> pd.DataFrame:
+    excel_latest_by_code = (
+        df.sort_values(["code", "date"])
+        .groupby("code", as_index=False)
+        .tail(1)
+        .set_index("code")
+    )
+    codes = excel_latest_by_code.index.tolist()
+    if not codes:
+        return df
+
+    print("\n[당일 가격/거래량 확인]")
+    print(f"FinanceDataReader 조회 대상: {len(codes):,}개 종목")
+
+    metrics = []
+    completed = 0
+    with ThreadPoolExecutor(max_workers=FDR_MAX_WORKERS) as executor:
+        future_to_code = {executor.submit(_fetch_fdr_price_metrics, code): code for code in codes}
+        for future in as_completed(future_to_code):
+            completed += 1
+            result = future.result()
+            if result is not None:
+                metrics.append(result)
+            if completed % 50 == 0 or completed == len(codes):
+                print(f"\r[FDR] {completed}/{len(codes)}", end="", flush=True)
+    print()
+
+    if not metrics:
+        print("  FDR 가격/거래량 데이터를 가져오지 못해 엑셀 기준 데이터를 사용합니다.")
+        return df
+
+    overlay_rows = []
+    today = datetime.now().date()
+    for item in metrics:
+        code = item["code"]
+        if code not in excel_latest_by_code.index:
+            continue
+        base = excel_latest_by_code.loc[code].copy()
+        base_date = pd.to_datetime(base["date"])
+        price_date = pd.to_datetime(item["price_data_date"])
+
+        if price_date <= base_date:
+            continue
+
+        base["code"] = code
+        for key, value in item.items():
+            if key != "code":
+                base[key] = value
+        base["date"] = price_date
+        base["price_data_source"] = "FinanceDataReader"
+        base["today_price_applied"] = price_date.date() == today
+
+        for period, turnover_col in [(5, "turnover_avg_5d"), (20, "turnover_avg_20d")]:
+            if pd.notna(base.get(turnover_col)) and base.get(turnover_col) != 0:
+                base[f"inst_ratio_{period}d"] = (
+                    pd.to_numeric(base.get(f"inst_net_{period}d"), errors="coerce") * 10_000
+                    / (base.get(turnover_col) * period)
+                    * 100
+                )
+                base[f"foreign_ratio_{period}d"] = (
+                    pd.to_numeric(base.get(f"foreign_net_{period}d"), errors="coerce") * 10_000
+                    / (base.get(turnover_col) * period)
+                    * 100
+                )
+
+        overlay_rows.append(base)
+
+    if not overlay_rows:
+        print("  엑셀 기준일보다 최신인 FDR 데이터가 없어 엑셀 기준 데이터를 사용합니다.")
+        return df
+
+    overlay_df = pd.DataFrame(overlay_rows).reset_index(drop=True)
+    print(
+        "  당일 가격/거래량 반영: "
+        f"{len(overlay_df):,}개 종목 "
+        f"(당일 날짜 일치: {int(overlay_df['today_price_applied'].sum()):,}개)"
+    )
+    return pd.concat([df, overlay_df], ignore_index=True, sort=False).replace([np.inf, -np.inf], np.nan)
+
+
 def latest_scoring_frame(df: pd.DataFrame) -> pd.DataFrame:
-    latest_date = df["date"].max()
-    latest = df[df["date"] == latest_date].copy()
+    latest = df.sort_values(["code", "date"]).groupby("code", as_index=False).tail(1).copy()
 
     latest["above_ma10"] = latest["close"] > latest["ma10"]
     latest["ma5_above_ma10"] = latest["ma5"] > latest["ma10"]
@@ -183,7 +351,7 @@ def latest_scoring_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     latest["value_score"] = (
         normalize_score(latest["turnover_rvol"]) * 0.70
-        + normalize_score(latest["turnover_avg_5d"]) * 0.30
+        + normalize_score(latest["turnover"].fillna(latest["turnover_avg_5d"])) * 0.30
     ).round(1)
 
     latest["total_score"] = (
@@ -239,7 +407,7 @@ def _format_table_sheet(ws, freeze_row: int = 2) -> None:
         ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 24)
 
 
-def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_date: str) -> None:
+def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, price_ref_date: str, supply_ref_date: str) -> None:
     from openpyxl.chart import PieChart, Reference
     from openpyxl.chart.label import DataLabelList
     from openpyxl.chart.series import DataPoint
@@ -306,7 +474,10 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
 
     ws.merge_cells("B3:L3")
     style_range("B3:L3", color_blue, font(False, color_white, 10))
-    ws["B3"] = f"기준일: {ref_date}  |  분석 대상: {len(final):,}개 종목  |  가격/수급/거래대금: {PRICE_WEIGHT:.0%}/{SUPPLY_WEIGHT:.0%}/{VALUE_WEIGHT:.0%}"
+    ws["B3"] = (
+        f"가격/거래량 기준일: {price_ref_date}  |  수급 기준일: {supply_ref_date}  |  "
+        f"분석 대상: {len(final):,}개 종목  |  가격/수급/거래대금: {PRICE_WEIGHT:.0%}/{SUPPLY_WEIGHT:.0%}/{VALUE_WEIGHT:.0%}"
+    )
 
     grade_counts = {g: 0 for g in ["A", "B", "C", "D", "F"]}
     for grade, count in final["등급"].value_counts().items():
@@ -320,7 +491,7 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
         ("A등급", grade_counts["A"], color_gold),
         ("65점 이상", score_65_plus, color_green),
         ("80점 이상", score_80_plus, color_navy),
-        ("수급 양호", int(final["기관외인동시순매수"].fillna(False).sum()), color_orange),
+        ("당일 가격", int(final["당일가격반영"].fillna(False).sum()), color_orange),
     ]
     for idx, (label, value, color) in enumerate(cards):
         col = 2 + idx * 2
@@ -432,16 +603,114 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, ref_
     ws.add_chart(pie, "N15")
 
 
-def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str) -> Path:
+def build_etf_momentum_sheet() -> pd.DataFrame:
+    if not TICKER_FILE.exists():
+        print(f"\n[ETF현황] 티커 파일 없음: {TICKER_FILE}")
+        return pd.DataFrame()
+
+    print("\n[ETF 모멘텀 분석]")
+    base = _load_whole_stock_module()
+    _, etf_tickers_set = base.get_tickers_from_excel(str(TICKER_FILE))
+    etf_tickers = sorted(etf_tickers_set)
+    if not etf_tickers:
+        print("  ETF 티커가 없습니다.")
+        return pd.DataFrame()
+
+    results = base.analyze_tickers_parallel(
+        etf_tickers,
+        period="3M",
+        max_workers=ETF_MAX_WORKERS,
+        mode=1,
+    )
+    if not results:
+        print("  ETF 분석 결과가 없습니다.")
+        return pd.DataFrame()
+
+    etf_all = pd.DataFrame(results)
+    etf_base_cols = [
+        c for c in [
+            "ticker", "rsi", "rvol",
+            "last_ma10_break_above", "last_ma10_break_below",
+            "trend_detail",
+            "close_price", "prev_close", "price_change_percent",
+            "ma10", "ma_distance_percent",
+        ]
+        if c in etf_all.columns
+    ]
+    etf_save = etf_all[etf_base_cols].copy()
+
+    etf_ticker_list = etf_all["ticker"].tolist()
+    try:
+        etf_names = base.get_multiple_security_names(etf_ticker_list)
+    except Exception:
+        etf_names = {ticker: ticker for ticker in etf_ticker_list}
+
+    etf_save.insert(0, "종목명", etf_save["ticker"].map(etf_names))
+    etf_save.insert(1, "티커", etf_save["ticker"])
+    etf_save = etf_save.drop(columns=["ticker"])
+
+    etf_save.insert(
+        3,
+        "10일선상태",
+        etf_all["condition_1_trend_breakdown"].map(
+            {False: "10일선 위", True: "10일선 아래"}
+        ).values,
+    )
+
+    for col in ["price_change_percent", "ma_distance_percent", "rvol"]:
+        if col in etf_save.columns:
+            etf_save[col] = pd.to_numeric(etf_save[col], errors="coerce").round(1)
+    if "rsi" in etf_save.columns:
+        etf_save["rsi"] = pd.to_numeric(etf_save["rsi"], errors="coerce").round(1)
+
+    etf_save = etf_save.rename(
+        columns={
+            "rvol": "RVOL",
+            "rsi": "RSI",
+            "last_ma10_break_above": "10일선돌파일",
+            "last_ma10_break_below": "10일선이탈일",
+            "trend_detail": "추세상세",
+            "close_price": "현재가",
+            "prev_close": "전일종가",
+            "price_change_percent": "전일비(%)",
+            "ma10": "10일선",
+            "ma_distance_percent": "10일선괴리율(%)",
+        }
+    )
+
+    if {"10일선돌파일", "10일선이탈일"}.issubset(etf_save.columns):
+        etf_save = etf_save.sort_values(
+            by=["10일선돌파일", "10일선이탈일"],
+            ascending=[False, True],
+            na_position="last",
+        )
+
+    etf_columns = [
+        "종목명", "티커", "RSI", "10일선상태", "RVOL",
+        "10일선돌파일", "10일선이탈일", "추세상세",
+        "현재가", "전일종가", "전일비(%)", "10일선", "10일선괴리율(%)",
+    ]
+    for col in etf_columns:
+        if col not in etf_save.columns:
+            etf_save[col] = pd.NA
+
+    etf_save = etf_save[etf_columns].reset_index(drop=True)
+    print(f"[ETF현황] {len(etf_save)}개 ETF 분석 완료")
+    return etf_save
+
+
+def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str, supply_ref_date: pd.Timestamp, etf_sheet: pd.DataFrame | None = None) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output = OUTPUT_DIR / f"전종목_수급_스코어링_{datetime.now().strftime('%Y%m%d')}.xlsx"
 
     output_cols = [
         "date", "code", "name", "total_score", "grade",
         "price_score", "supply_score", "value_score",
+        "price_data_date", "price_data_source", "today_price_applied",
         "close", "ret_5d", "ret_20d", "ma5", "ma10", "ma20",
         "above_ma10", "ma5_above_ma10",
-        "turnover_avg_5d", "turnover_avg_20d", "turnover_rvol",
+        "volume", "volume_avg_5d", "volume_avg_20d",
+        "turnover", "turnover_avg_5d", "turnover_avg_20d", "turnover_rvol",
         "inst_net_5d", "inst_net_20d", "foreign_net_5d", "foreign_net_20d",
         "inst_ratio_5d", "inst_ratio_20d", "foreign_ratio_5d", "foreign_ratio_20d",
         "inst_positive_rate_20d", "foreign_positive_rate_20d", "both_supply_positive",
@@ -459,6 +728,9 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str) -> Pat
         "price_score": "가격스코어",
         "supply_score": "수급스코어",
         "value_score": "거래대금스코어",
+        "price_data_date": "가격/거래량기준일",
+        "price_data_source": "가격데이터소스",
+        "today_price_applied": "당일가격반영",
         "close": "종가",
         "ret_5d": "5일수익률(%)",
         "ret_20d": "20일수익률(%)",
@@ -467,9 +739,13 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str) -> Pat
         "ma20": "20일선",
         "above_ma10": "10일선상회",
         "ma5_above_ma10": "5일선>10일선",
+        "volume": "당일거래량",
+        "volume_avg_5d": "거래량5일평균",
+        "volume_avg_20d": "거래량20일평균",
+        "turnover": "당일거래대금(원)",
         "turnover_avg_5d": "거래대금5일평균(원)",
         "turnover_avg_20d": "거래대금20일평균(원)",
-        "turnover_rvol": "거래대금5일/20일",
+        "turnover_rvol": "당일거래대금/20일평균",
         "inst_net_5d": "기관5일순매수(만원)",
         "inst_net_20d": "기관20일순매수(만원)",
         "foreign_net_5d": "외국인5일순매수(만원)",
@@ -488,11 +764,16 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str) -> Pat
     final[numeric_cols] = final[numeric_cols].round(2)
     recommend = final[pd.to_numeric(final["종합스코어"], errors="coerce") >= 65].copy()
 
+    price_ref_date = pd.to_datetime(scored["price_data_date"], errors="coerce").max().strftime("%Y-%m-%d")
+    supply_ref_date_str = pd.to_datetime(supply_ref_date).strftime("%Y-%m-%d")
+
     summary = pd.DataFrame(
         [
             {"항목": "입력파일", "값": str(INPUT_FILE)},
             {"항목": "사용시트", "값": sheet},
-            {"항목": "기준일", "값": scored["date"].max().strftime("%Y-%m-%d")},
+            {"항목": "가격/거래량 기준일", "값": price_ref_date},
+            {"항목": "수급 기준일", "값": supply_ref_date_str},
+            {"항목": "당일 가격 반영 종목수", "값": int(final["당일가격반영"].fillna(False).sum())},
             {"항목": "대상종목수", "값": len(final)},
             {"항목": "65점 이상", "값": len(recommend)},
             {"항목": "가격/수급/거래대금 가중치", "값": f"{PRICE_WEIGHT:.0%}/{SUPPLY_WEIGHT:.0%}/{VALUE_WEIGHT:.0%}"},
@@ -502,19 +783,24 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str) -> Pat
     a_grade = final[final["등급"] == "A"].copy()
     foreign_top = final.sort_values("외국인5일순매수/거래대금(%)", ascending=False, na_position="last").head(50)
     inst_top = final.sort_values("기관5일순매수/거래대금(%)", ascending=False, na_position="last").head(50)
-    value_top = final.sort_values("거래대금5일/20일", ascending=False, na_position="last").head(50)
+    value_top = final.sort_values("당일거래대금/20일평균", ascending=False, na_position="last").head(50)
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        _create_report_sheet(writer, final, scored, scored["date"].max().strftime("%Y-%m-%d"))
+        _create_report_sheet(writer, final, scored, price_ref_date, supply_ref_date_str)
         recommend.to_excel(writer, sheet_name="추천종목", index=False)
         a_grade.to_excel(writer, sheet_name="A등급", index=False)
         final.to_excel(writer, sheet_name="전체", index=False)
         foreign_top.to_excel(writer, sheet_name="외국인순매수TOP", index=False)
         inst_top.to_excel(writer, sheet_name="기관순매수TOP", index=False)
         value_top.to_excel(writer, sheet_name="거래대금TOP", index=False)
+        if etf_sheet is not None and not etf_sheet.empty:
+            etf_sheet.to_excel(writer, sheet_name="ETF현황", index=False)
         summary.to_excel(writer, sheet_name="요약", index=False)
 
-        for sheet_name in ["추천종목", "A등급", "전체", "외국인순매수TOP", "기관순매수TOP", "거래대금TOP", "요약"]:
+        sheet_names = ["추천종목", "A등급", "전체", "외국인순매수TOP", "기관순매수TOP", "거래대금TOP", "요약"]
+        if etf_sheet is not None and not etf_sheet.empty:
+            sheet_names.insert(-1, "ETF현황")
+        for sheet_name in sheet_names:
             _format_table_sheet(writer.sheets[sheet_name])
 
     return output
@@ -526,8 +812,10 @@ def main() -> None:
 
     wide, sheet = load_workbook_data(INPUT_FILE)
     history = add_time_series_features(wide)
+    supply_ref_date = history["date"].max()
+    history = apply_fdr_price_overlay(history)
     scored = latest_scoring_frame(history)
-    output = save_outputs(scored, history, sheet)
+    output = save_outputs(scored, history, sheet, supply_ref_date)
 
     top_cols = ["date", "code", "name", "total_score", "grade", "price_score", "supply_score", "value_score"]
     print("\n[TOP 20]")
