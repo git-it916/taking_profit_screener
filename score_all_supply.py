@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import importlib.util
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,19 +20,16 @@ import pandas as pd
 
 
 BASE_DIR = Path(r"C:\Users\10845\Documents\quant_project")
-CURRENT_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / "전종목_수급.xlsx"
 OUTPUT_DIR = BASE_DIR / "[오후] whole-stock-2"
-TICKER_FILE = CURRENT_DIR / "bloomberg_ticker.xlsx"
 SOURCE_SHEET = "Sheet1"
 
-PRICE_WEIGHT = 0.35
-SUPPLY_WEIGHT = 0.45
-VALUE_WEIGHT = 0.20
+PRICE_WEIGHT = 0.50
+SUPPLY_WEIGHT = 0.20
+VALUE_WEIGHT = 0.30
 FDR_LOOKBACK_DAYS = 80
 FDR_MAX_WORKERS = 16
 ETF_MAX_WORKERS = 16
-
 
 ITEM_MAP = {
     "종가(원)": "close",
@@ -44,14 +40,6 @@ ITEM_MAP = {
     "순매수대금(외국인계)(5일합산)(만원)": "foreign_net_5d",
     "순매수대금(외국인계)(20일합산)(만원)": "foreign_net_20d",
 }
-
-
-def _load_whole_stock_module():
-    module_path = CURRENT_DIR / "whole-stock.py"
-    spec = importlib.util.spec_from_file_location("whole_stock_base", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def normalize_score(series: pd.Series, higher_is_better: bool = True) -> pd.Series:
@@ -601,102 +589,6 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, pric
     pie.width = 12
     pie.height = 9
     ws.add_chart(pie, "N15")
-
-
-def build_etf_momentum_sheet() -> pd.DataFrame:
-    if not TICKER_FILE.exists():
-        print(f"\n[ETF현황] 티커 파일 없음: {TICKER_FILE}")
-        return pd.DataFrame()
-
-    print("\n[ETF 모멘텀 분석]")
-    base = _load_whole_stock_module()
-    _, etf_tickers_set = base.get_tickers_from_excel(str(TICKER_FILE))
-    etf_tickers = sorted(etf_tickers_set)
-    if not etf_tickers:
-        print("  ETF 티커가 없습니다.")
-        return pd.DataFrame()
-
-    results = base.analyze_tickers_parallel(
-        etf_tickers,
-        period="3M",
-        max_workers=ETF_MAX_WORKERS,
-        mode=1,
-    )
-    if not results:
-        print("  ETF 분석 결과가 없습니다.")
-        return pd.DataFrame()
-
-    etf_all = pd.DataFrame(results)
-    etf_base_cols = [
-        c for c in [
-            "ticker", "rsi", "rvol",
-            "last_ma10_break_above", "last_ma10_break_below",
-            "trend_detail",
-            "close_price", "prev_close", "price_change_percent",
-            "ma10", "ma_distance_percent",
-        ]
-        if c in etf_all.columns
-    ]
-    etf_save = etf_all[etf_base_cols].copy()
-
-    etf_ticker_list = etf_all["ticker"].tolist()
-    try:
-        etf_names = base.get_multiple_security_names(etf_ticker_list)
-    except Exception:
-        etf_names = {ticker: ticker for ticker in etf_ticker_list}
-
-    etf_save.insert(0, "종목명", etf_save["ticker"].map(etf_names))
-    etf_save.insert(1, "티커", etf_save["ticker"])
-    etf_save = etf_save.drop(columns=["ticker"])
-
-    etf_save.insert(
-        3,
-        "10일선상태",
-        etf_all["condition_1_trend_breakdown"].map(
-            {False: "10일선 위", True: "10일선 아래"}
-        ).values,
-    )
-
-    for col in ["price_change_percent", "ma_distance_percent", "rvol"]:
-        if col in etf_save.columns:
-            etf_save[col] = pd.to_numeric(etf_save[col], errors="coerce").round(1)
-    if "rsi" in etf_save.columns:
-        etf_save["rsi"] = pd.to_numeric(etf_save["rsi"], errors="coerce").round(1)
-
-    etf_save = etf_save.rename(
-        columns={
-            "rvol": "RVOL",
-            "rsi": "RSI",
-            "last_ma10_break_above": "10일선돌파일",
-            "last_ma10_break_below": "10일선이탈일",
-            "trend_detail": "추세상세",
-            "close_price": "현재가",
-            "prev_close": "전일종가",
-            "price_change_percent": "전일비(%)",
-            "ma10": "10일선",
-            "ma_distance_percent": "10일선괴리율(%)",
-        }
-    )
-
-    if {"10일선돌파일", "10일선이탈일"}.issubset(etf_save.columns):
-        etf_save = etf_save.sort_values(
-            by=["10일선돌파일", "10일선이탈일"],
-            ascending=[False, True],
-            na_position="last",
-        )
-
-    etf_columns = [
-        "종목명", "티커", "RSI", "10일선상태", "RVOL",
-        "10일선돌파일", "10일선이탈일", "추세상세",
-        "현재가", "전일종가", "전일비(%)", "10일선", "10일선괴리율(%)",
-    ]
-    for col in etf_columns:
-        if col not in etf_save.columns:
-            etf_save[col] = pd.NA
-
-    etf_save = etf_save[etf_columns].reset_index(drop=True)
-    print(f"[ETF현황] {len(etf_save)}개 ETF 분석 완료")
-    return etf_save
 
 
 def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str, supply_ref_date: pd.Timestamp, etf_sheet: pd.DataFrame | None = None) -> Path:
