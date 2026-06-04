@@ -668,9 +668,6 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, pric
             cell.fill = fill(color_navy if row == chart_row else color_light)
             cell.alignment = center
             cell.border = border
-    ws.column_dimensions["N"].hidden = True
-    ws.column_dimensions["O"].hidden = True
-
     pie = PieChart()
     pie.title = "전종목 스코어 분포"
     pie.style = 10
