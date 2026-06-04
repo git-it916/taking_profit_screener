@@ -192,6 +192,7 @@ def add_time_series_features(df: pd.DataFrame) -> pd.DataFrame:
         df["ret_20d"] = pd.to_numeric(df["avg_ret_20d"], errors="coerce")
     else:
         df["ret_20d"] = grouped["close"].pct_change(20) * 100
+    df["ret_1d"] = grouped["close"].pct_change(1) * 100
 
     # 일간변동성(종가 기반) → 위험조정 모멘텀 = 수익률 / 변동성
     df["vol_20d"] = (
@@ -278,6 +279,7 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
                 return np.nan
             return (close.iloc[-1] / close.iloc[-days - 1] - 1) * 100
 
+        ret_1d = pct_change(1)
         ret_5d = pct_change(5)
         ret_20d = pct_change(20)
         daily_ret = close.pct_change()
@@ -308,6 +310,7 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
             "volume_avg_5d": volume_avg_5d,
             "volume_avg_20d": volume_avg_20d,
             "turnover_rvol": latest_turnover / turnover_avg_20d if pd.notna(turnover_avg_20d) and turnover_avg_20d else np.nan,
+            "ret_1d": ret_1d,
             "ret_5d": ret_5d,
             "ret_20d": ret_20d,
             "vol_20d": vol_20d,
@@ -407,6 +410,7 @@ def latest_scoring_frame(df: pd.DataFrame) -> pd.DataFrame:
     latest["above_ma10"] = latest["close"] > latest["ma10"]
     latest["ma5_above_ma10"] = latest["ma5"] > latest["ma10"]
     latest["both_supply_positive"] = (latest["inst_ratio_5d"] > 0) & (latest["foreign_ratio_5d"] > 0)
+    negative_intraday_return_mask = pd.to_numeric(latest["ret_1d"], errors="coerce").lt(0)
 
     # 가격 모멘텀 4축 (서로 상관 낮음):
     #   20일수익률(추세) · 위험조정모멘텀(추세의 질) · 5일수익률(단기추세) · 추세정렬(종가/이평)
@@ -415,6 +419,9 @@ def latest_scoring_frame(df: pd.DataFrame) -> pd.DataFrame:
         + normalize_score(latest["risk_adj_mom"]).clip(2, 98) * 0.25
         + normalize_score(latest["ret_5d"]).clip(2, 98) * 0.20
         + latest["trend_align_score"].fillna(50).clip(0, 100) * 0.15
+    ).round(1)
+    latest.loc[negative_intraday_return_mask, "price_score"] = (
+        latest.loc[negative_intraday_return_mask, "price_score"] * 0.75
     ).round(1)
 
     latest["supply_score"] = (
@@ -431,7 +438,9 @@ def latest_scoring_frame(df: pd.DataFrame) -> pd.DataFrame:
         normalize_score(latest["turnover_rvol"]) * 0.70
         + normalize_score(latest["turnover"].fillna(latest["turnover_avg_5d"])) * 0.30
     ).round(1)
-
+    latest.loc[negative_intraday_return_mask, "value_score"] = (
+        latest.loc[negative_intraday_return_mask, "value_score"] * 0.5
+    ).round(1)
     latest["total_score"] = (
         latest["price_score"] * PRICE_WEIGHT
         + latest["supply_score"] * SUPPLY_WEIGHT
@@ -689,7 +698,7 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str, supply
         "date", "code", "name", "total_score", "grade",
         "price_score", "supply_score", "value_score",
         "price_data_date", "price_data_source", "today_price_applied",
-        "close", "ret_5d", "ret_20d", "risk_adj_mom", "vol_20d", "trend_align_score",
+        "close", "ret_1d", "ret_5d", "ret_20d", "risk_adj_mom", "vol_20d", "trend_align_score",
         "ma5", "ma10", "ma20", "above_ma10", "ma5_above_ma10",
         "volume", "volume_avg_5d", "volume_avg_20d",
         "turnover", "turnover_avg_5d", "turnover_avg_20d", "turnover_rvol",
@@ -714,6 +723,7 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str, supply
         "price_data_source": "가격데이터소스",
         "today_price_applied": "당일가격반영",
         "close": "종가",
+        "ret_1d": "당일수익률(%)",
         "ret_5d": "1주수익률(%)",
         "ret_20d": "1개월수익률(%)",
         "risk_adj_mom": "위험조정모멘텀",
