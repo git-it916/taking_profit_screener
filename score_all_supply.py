@@ -270,12 +270,37 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
         volume_avg_5d = tail_mean(volume, 5, 3)
         volume_avg_20d = tail_mean(volume, 20, 10)
 
-        # 가격 모멘텀(ret/vol/ma/trend)은 엑셀 평균수익률 컬럼이 기준이므로 여기서 덮어쓰지 않습니다.
-        # FDR은 '당일 종가·거래량·거래대금' 신선도만 제공합니다.
+        # FDR이 엑셀보다 최신 거래일을 제공하면, 모멘텀(수익률/이평/변동성/추세)을
+        # FDR '당일가' 기준으로 다시 계산합니다. (엑셀과 수정주가 기준이 동일함을 확인)
+        # 1주 ≈ 5거래일, 1개월 ≈ 20거래일로 근사합니다.
+        def pct_change(days: int):
+            if len(close) <= days or pd.isna(close.iloc[-days - 1]) or close.iloc[-days - 1] == 0:
+                return np.nan
+            return (close.iloc[-1] / close.iloc[-days - 1] - 1) * 100
+
+        ret_5d = pct_change(5)
+        ret_20d = pct_change(20)
+        daily_ret = close.pct_change()
+        vol_20d = float(daily_ret.tail(20).std() * 100) if daily_ret.notna().sum() >= 5 else np.nan
+        risk_adj_mom = ret_20d / vol_20d if pd.notna(vol_20d) and vol_20d else np.nan
+
+        ma5 = tail_mean(close, 5, 3)
+        ma10 = tail_mean(close, 10, 5)
+        ma20 = tail_mean(close, 20, 10)
+        latest_close = float(latest["Close"])
+        if pd.notna(ma10) and ma10:
+            trend_align = (
+                0.5 * np.tanh(8 * (latest_close / ma10 - 1))
+                + 0.5 * (np.tanh(8 * (ma5 / ma10 - 1)) if pd.notna(ma5) else 0.0)
+            )
+            trend_align_score = float(np.clip((trend_align + 1) * 50, 0, 100))
+        else:
+            trend_align_score = np.nan
+
         return {
             "code": code,
             "price_data_date": latest["date"],
-            "close": float(latest["Close"]),
+            "close": latest_close,
             "volume": float(latest["Volume"]),
             "turnover": latest_turnover,
             "turnover_avg_5d": turnover_avg_5d,
@@ -283,6 +308,14 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
             "volume_avg_5d": volume_avg_5d,
             "volume_avg_20d": volume_avg_20d,
             "turnover_rvol": latest_turnover / turnover_avg_20d if pd.notna(turnover_avg_20d) and turnover_avg_20d else np.nan,
+            "ret_5d": ret_5d,
+            "ret_20d": ret_20d,
+            "vol_20d": vol_20d,
+            "risk_adj_mom": risk_adj_mom,
+            "ma5": ma5,
+            "ma10": ma10,
+            "ma20": ma20,
+            "trend_align_score": trend_align_score,
         }
     except Exception:
         return None
