@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,7 +20,9 @@ import numpy as np
 import pandas as pd
 
 
-BASE_DIR = Path(r"C:\Users\10845\Documents\quant_project")
+# 전종목_수급.xlsx는 이 스크립트와 같은 폴더에 두고(레포에 푸시) 실행한다고 가정합니다.
+# 10845 머신이든 다른 머신이든 스크립트 위치 기준으로 읽으므로 경로 하드코딩이 필요 없습니다.
+BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = BASE_DIR / "전종목_수급.xlsx"
 OUTPUT_DIR = BASE_DIR / "[오후] whole-stock-2"
 SOURCE_SHEET = "Sheet1"
@@ -31,15 +34,45 @@ FDR_LOOKBACK_DAYS = 80
 FDR_MAX_WORKERS = 16
 ETF_MAX_WORKERS = 16
 
-ITEM_MAP = {
-    "종가(원)": "close",
-    "거래대금 (5일 평균)(원)": "turnover_avg_5d",
-    "거래대금 (20일 평균)(원)": "turnover_avg_20d",
-    "순매수대금(기관계)(5일합산)(만원)": "inst_net_5d",
-    "순매수대금(기관계)(20일합산)(만원)": "inst_net_20d",
-    "순매수대금(외국인계)(5일합산)(만원)": "foreign_net_5d",
-    "순매수대금(외국인계)(20일합산)(만원)": "foreign_net_20d",
-}
+# 데이터가이드 export의 아이템 라벨은 버전마다 표기가 조금씩 다릅니다
+# (예: "5일평균거래대금(원)" vs "거래대금 (5일 평균)(원)").
+# 정확 문자열 매칭은 라벨이 바뀌면 컬럼이 통째로 누락되므로,
+# 키워드 + "N일" 기간을 추출하는 리졸버로 매핑합니다.
+_PERIOD_RE = re.compile(r"(\d+)\s*일")
+
+
+def resolve_item_field(item: str) -> str | None:
+    """엑셀 아이템 라벨 → 내부 필드명. 구/신 라벨 및 평균수익률 컬럼 모두 대응."""
+    item = str(item).strip()
+    if not item or item == "아이템명":
+        return None
+
+    if "종가" in item:
+        return "close"
+
+    match = _PERIOD_RE.search(item)
+    period = match.group(1) if match else None
+
+    def by_period(field_5d: str, field_20d: str) -> str | None:
+        if period == "5":
+            return field_5d
+        if period == "20":
+            return field_20d
+        return None
+
+    if "수익" in item:  # 수익률 컬럼 (1주전대비/1개월전대비 또는 5일/20일 등 표기 다양)
+        if "주" in item:   # 1주전대비 → 단기(≈5거래일) 슬롯
+            return "avg_ret_5d"
+        if "월" in item:   # 1개월전대비 → 중기(≈20거래일) 슬롯
+            return "avg_ret_20d"
+        return by_period("avg_ret_5d", "avg_ret_20d")
+    if "거래대금" in item:
+        return by_period("turnover_avg_5d", "turnover_avg_20d")
+    if "순매수" in item and "기관" in item:
+        return by_period("inst_net_5d", "inst_net_20d")
+    if "순매수" in item and ("외국인" in item or "외인" in item):
+        return by_period("foreign_net_5d", "foreign_net_20d")
+    return None
 
 
 def normalize_score(series: pd.Series, higher_is_better: bool = True) -> pd.Series:
@@ -94,7 +127,7 @@ def load_workbook_data(path: Path) -> tuple[pd.DataFrame, str]:
             continue
 
         item = str(item_names.get(col, "")).strip()
-        field = ITEM_MAP.get(item)
+        field = resolve_item_field(item)
         if field is None:
             continue
 
@@ -127,9 +160,17 @@ def load_workbook_data(path: Path) -> tuple[pd.DataFrame, str]:
     )
     wide.columns.name = None
 
+    loaded_fields = [c for c in wide.columns if c not in {"date", "code", "name"}]
+    has_ret = {"avg_ret_5d", "avg_ret_20d"} & set(loaded_fields)
+    has_supply = {"inst_net_5d", "foreign_net_5d"} & set(loaded_fields)
+    has_turnover = {"turnover_avg_5d", "turnover_avg_20d"} & set(loaded_fields)
+
     print(f"사용 시트: {sheet}")
     print(f"파싱 종목 수: {pd.Series(unique_symbols).nunique():,}개")
     print(f"데이터 기간: {wide['date'].min().strftime('%Y-%m-%d')} ~ {wide['date'].max().strftime('%Y-%m-%d')}")
+    print(f"로드된 필드: {sorted(loaded_fields)}")
+    print(f"  평균수익률 컬럼: {'사용' if has_ret else '없음 → 종가 pct_change로 대체'}")
+    print(f"  거래대금: {'로드됨' if has_turnover else '누락!'} / 수급: {'로드됨' if has_supply else '누락!'}")
     return wide, sheet
 
 
@@ -137,11 +178,33 @@ def add_time_series_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["code", "date"]).copy()
 
     grouped = df.groupby("code", group_keys=False)
-    df["ret_5d"] = grouped["close"].pct_change(5) * 100
-    df["ret_20d"] = grouped["close"].pct_change(20) * 100
     df["ma5"] = grouped["close"].transform(lambda s: s.rolling(5, min_periods=3).mean())
     df["ma10"] = grouped["close"].transform(lambda s: s.rolling(10, min_periods=5).mean())
     df["ma20"] = grouped["close"].transform(lambda s: s.rolling(20, min_periods=10).mean())
+
+    # 수익률: 데이터가이드의 '평균 수익률' 컬럼을 우선 사용하고, 없으면 종가로 계산합니다.
+    # (엑셀은 거래일이 ~15일뿐이라 pct_change(20)은 전종목 NaN이 되므로 컬럼 사용이 핵심)
+    if "avg_ret_5d" in df.columns:
+        df["ret_5d"] = pd.to_numeric(df["avg_ret_5d"], errors="coerce")
+    else:
+        df["ret_5d"] = grouped["close"].pct_change(5) * 100
+    if "avg_ret_20d" in df.columns:
+        df["ret_20d"] = pd.to_numeric(df["avg_ret_20d"], errors="coerce")
+    else:
+        df["ret_20d"] = grouped["close"].pct_change(20) * 100
+
+    # 일간변동성(종가 기반) → 위험조정 모멘텀 = 수익률 / 변동성
+    df["vol_20d"] = (
+        grouped["close"].transform(lambda s: s.pct_change().rolling(20, min_periods=5).std()) * 100
+    )
+    df["risk_adj_mom"] = df["ret_20d"] / df["vol_20d"].replace(0, np.nan)
+
+    # 추세정렬 연속점수: 종가/단기이평, 단기이평/중기이평 정렬을 0~100으로 (이진 above_ma 대체)
+    trend_align = (
+        0.5 * np.tanh(8 * (df["close"] / df["ma10"] - 1))
+        + 0.5 * np.tanh(8 * (df["ma5"] / df["ma10"] - 1))
+    )
+    df["trend_align_score"] = ((trend_align + 1) * 50).clip(0, 100)
 
     # 수급은 만원 단위, 거래대금은 원 단위입니다.
     df["inst_ratio_5d"] = (df["inst_net_5d"] * 10_000) / (df["turnover_avg_5d"] * 5) * 100
@@ -197,11 +260,6 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
         latest = df.iloc[-1]
         latest_turnover = float(turnover.iloc[-1])
 
-        def pct_change(days: int):
-            if len(close) <= days or pd.isna(close.iloc[-days - 1]) or close.iloc[-days - 1] == 0:
-                return np.nan
-            return (close.iloc[-1] / close.iloc[-days - 1] - 1) * 100
-
         def tail_mean(series: pd.Series, days: int, min_periods: int):
             if len(series.dropna()) < min_periods:
                 return np.nan
@@ -212,6 +270,8 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
         volume_avg_5d = tail_mean(volume, 5, 3)
         volume_avg_20d = tail_mean(volume, 20, 10)
 
+        # 가격 모멘텀(ret/vol/ma/trend)은 엑셀 평균수익률 컬럼이 기준이므로 여기서 덮어쓰지 않습니다.
+        # FDR은 '당일 종가·거래량·거래대금' 신선도만 제공합니다.
         return {
             "code": code,
             "price_data_date": latest["date"],
@@ -223,11 +283,6 @@ def _fetch_fdr_price_metrics(code: str) -> dict | None:
             "volume_avg_5d": volume_avg_5d,
             "volume_avg_20d": volume_avg_20d,
             "turnover_rvol": latest_turnover / turnover_avg_20d if pd.notna(turnover_avg_20d) and turnover_avg_20d else np.nan,
-            "ret_5d": pct_change(5),
-            "ret_20d": pct_change(20),
-            "ma5": tail_mean(close, 5, 3),
-            "ma10": tail_mean(close, 10, 5),
-            "ma20": tail_mean(close, 20, 10),
         }
     except Exception:
         return None
@@ -320,11 +375,13 @@ def latest_scoring_frame(df: pd.DataFrame) -> pd.DataFrame:
     latest["ma5_above_ma10"] = latest["ma5"] > latest["ma10"]
     latest["both_supply_positive"] = (latest["inst_ratio_5d"] > 0) & (latest["foreign_ratio_5d"] > 0)
 
+    # 가격 모멘텀 4축 (서로 상관 낮음):
+    #   20일수익률(추세) · 위험조정모멘텀(추세의 질) · 5일수익률(단기추세) · 추세정렬(종가/이평)
     latest["price_score"] = (
         normalize_score(latest["ret_20d"]).clip(2, 98) * 0.40
-        + normalize_score(latest["ret_5d"]).clip(2, 98) * 0.30
-        + latest["above_ma10"].astype(float) * 100 * 0.20
-        + latest["ma5_above_ma10"].astype(float) * 100 * 0.10
+        + normalize_score(latest["risk_adj_mom"]).clip(2, 98) * 0.25
+        + normalize_score(latest["ret_5d"]).clip(2, 98) * 0.20
+        + latest["trend_align_score"].fillna(50).clip(0, 100) * 0.15
     ).round(1)
 
     latest["supply_score"] = (
@@ -509,7 +566,7 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, pric
     ws["B10"] = "[Top] 추천종목  (종합스코어 65점 이상)"
     ws["B10"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
-    headers = ["순위", "코드", "종목명", "종합", "등급", "가격", "수급", "거래대금", "5일수익률", "20일수익률", "기관/외인"]
+    headers = ["순위", "코드", "종목명", "종합", "등급", "가격", "수급", "거래대금", "1주수익률", "1개월수익률", "기관/외인"]
     for offset, header in enumerate(headers, start=2):
         cell = ws.cell(row=11, column=offset)
         cell.value = header
@@ -532,8 +589,8 @@ def _create_report_sheet(writer, final: pd.DataFrame, scored: pd.DataFrame, pric
             row.get("가격스코어", ""),
             row.get("수급스코어", ""),
             row.get("거래대금스코어", ""),
-            row.get("5일수익률(%)", ""),
-            row.get("20일수익률(%)", ""),
+            row.get("1주수익률(%)", ""),
+            row.get("1개월수익률(%)", ""),
             "동시순매수" if bool(row.get("기관외인동시순매수", False)) else "",
         ]
         for offset, value in enumerate(data, start=2):
@@ -599,8 +656,8 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str, supply
         "date", "code", "name", "total_score", "grade",
         "price_score", "supply_score", "value_score",
         "price_data_date", "price_data_source", "today_price_applied",
-        "close", "ret_5d", "ret_20d", "ma5", "ma10", "ma20",
-        "above_ma10", "ma5_above_ma10",
+        "close", "ret_5d", "ret_20d", "risk_adj_mom", "vol_20d", "trend_align_score",
+        "ma5", "ma10", "ma20", "above_ma10", "ma5_above_ma10",
         "volume", "volume_avg_5d", "volume_avg_20d",
         "turnover", "turnover_avg_5d", "turnover_avg_20d", "turnover_rvol",
         "inst_net_5d", "inst_net_20d", "foreign_net_5d", "foreign_net_20d",
@@ -624,8 +681,11 @@ def save_outputs(scored: pd.DataFrame, history: pd.DataFrame, sheet: str, supply
         "price_data_source": "가격데이터소스",
         "today_price_applied": "당일가격반영",
         "close": "종가",
-        "ret_5d": "5일수익률(%)",
-        "ret_20d": "20일수익률(%)",
+        "ret_5d": "1주수익률(%)",
+        "ret_20d": "1개월수익률(%)",
+        "risk_adj_mom": "위험조정모멘텀",
+        "vol_20d": "일간변동성20일(%)",
+        "trend_align_score": "추세정렬점수",
         "ma5": "5일선",
         "ma10": "10일선",
         "ma20": "20일선",
