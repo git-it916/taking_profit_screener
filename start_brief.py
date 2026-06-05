@@ -596,7 +596,8 @@ def main():
         if save_choice == 'y':
             from datetime import datetime as dt
 
-            output_dir = r"C:\Users\10845\Documents\quant_project\[오전] start-brief-result"
+            # 스크립트 위치 기준 동적 경로 (어느 머신에서 실행하든 현재 폴더의 [오전] start_brief 사용)
+            output_dir = os.path.join(current_dir, "[오전] start_brief")
             os.makedirs(output_dir, exist_ok=True)
 
             timestamp = dt.now().strftime("%Y%m%d_%H%M%S")

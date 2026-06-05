@@ -834,7 +834,8 @@ def main():
     print("\n" + "="*80)
     print("엑셀 파일 저장 중...")
 
-    save_dir = r"C:\Users\10845\Documents\quant_project\[오후] under_20w"
+    # 스크립트 위치 기준 동적 경로 (어느 머신에서 실행하든 현재 폴더의 [오후] under_20w 사용)
+    save_dir = os.path.join(current_dir, "[오후] under_20w")
     os.makedirs(save_dir, exist_ok=True)
 
     output_date = datetime.now().strftime("%Y%m%d")
