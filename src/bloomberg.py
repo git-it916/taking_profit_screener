@@ -1,0 +1,567 @@
+"""
+Bloomberg API를 통한 데이터 다운로드
+
+xbbg 라이브러리를 사용하여 Bloomberg Terminal에서 직접 데이터를 가져옵니다.
+"""
+
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Optional, List
+import warnings
+warnings.filterwarnings('ignore')
+
+
+def download_bloomberg_data(
+    ticker: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    period: str = '1Y',
+    verbose: bool = True
+) -> pd.DataFrame:
+    """
+    Bloomberg에서 OHLCV 데이터 다운로드
+
+    ====================================================================
+    사용 전 필수 조건:
+    ====================================================================
+    1. Bloomberg Terminal이 실행 중이어야 합니다
+    2. Bloomberg에 로그인되어 있어야 합니다
+    3. xbbg 라이브러리가 설치되어 있어야 합니다
+
+    ====================================================================
+    티커 형식:
+    ====================================================================
+    - 한국 주식: "005930 KS" (삼성전자), "000660 KS" (SK하이닉스)
+    - 미국 주식: "AAPL US" (애플), "MSFT US" (마이크로소프트)
+    - 일본 주식: "7203 JP" (도요타)
+
+    Parameters:
+    -----------
+    ticker : str
+        Bloomberg 티커 (예: "005930 KS", "AAPL US")
+    start_date : str, optional
+        시작 날짜 (YYYY-MM-DD 형식)
+        지정하지 않으면 period 사용
+    end_date : str, optional
+        종료 날짜 (YYYY-MM-DD 형식)
+        기본값: 오늘
+    period : str
+        데이터 기간 (start_date 미지정시)
+        - '3Y': 3년
+        - '2Y': 2년
+        - '1Y': 1년
+        - '6M': 6개월
+        - '3M': 3개월
+        - '1M': 1개월
+        기본값: '3Y'
+
+    Returns:
+    --------
+    pd.DataFrame : OHLCV 데이터
+        컬럼: Date, Open, High, Low, Close, Volume
+
+    Examples:
+    ---------
+    # 삼성전자 1년 데이터
+    df = download_bloomberg_data("005930 KS")
+
+    # 애플 2024년 데이터
+    df = download_bloomberg_data("AAPL US", "2024-01-01", "2024-12-31")
+
+    # LG에너지솔루션 6개월
+    df = download_bloomberg_data("373220 KS", period="6M")
+    """
+    try:
+        from xbbg import blp
+    except ImportError:
+        raise ImportError(
+            "xbbg 라이브러리가 설치되어 있지 않습니다.\n"
+            "설치: pip install xbbg"
+        )
+
+    # ====================================================================
+    # [1단계] 날짜 범위 설정
+    # ====================================================================
+    if end_date is None:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    if start_date is None:
+        # period에 따라 시작 날짜 계산
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+
+        if period == '3Y':
+            start_dt = end_dt - timedelta(days=1095)  # 3년
+        elif period == '2Y':
+            start_dt = end_dt - timedelta(days=730)  # 2년
+        elif period == '1Y':
+            start_dt = end_dt - timedelta(days=365)
+        elif period == '6M':
+            start_dt = end_dt - timedelta(days=180)
+        elif period == '3M':
+            start_dt = end_dt - timedelta(days=90)
+        elif period == '1M':
+            start_dt = end_dt - timedelta(days=30)
+        else:
+            # 기본값: 3년
+            start_dt = end_dt - timedelta(days=1095)
+
+        start_date = start_dt.strftime('%Y-%m-%d')
+
+    if verbose:
+        print(f"\n[Bloomberg 다운로드]")
+        print(f"  티커: {ticker}")
+        print(f"  기간: {start_date} ~ {end_date}")
+
+    # ====================================================================
+    # [2단계] Bloomberg에서 데이터 다운로드
+    # ====================================================================
+    try:
+        # Bloomberg 티커 형식 확인 및 조정
+        # "005930 KS" -> "005930 KS Equity"
+        if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+            ticker = ticker + ' Equity'
+
+        # xbbg.blp.bdh() 함수로 과거 데이터 다운로드
+        df = blp.bdh(
+            tickers=ticker,
+            flds=['PX_OPEN', 'PX_HIGH', 'PX_LOW', 'PX_LAST', 'PX_VOLUME'],
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        if df is None or len(df) == 0:
+            raise ValueError(f"데이터를 가져올 수 없습니다: {ticker}")
+
+        # ====================================================================
+        # [3단계] 데이터 포맷 변환
+        # ====================================================================
+        # xbbg는 MultiIndex 컬럼을 반환함 (ticker, field)
+        # 단일 티커이므로 컬럼 평탄화
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(1)
+
+        # 인덱스를 Date 컬럼으로 변환
+        df = df.reset_index()
+
+        # 컬럼명 변경
+        df = df.rename(columns={
+            'index': 'Date',
+            'date': 'Date',
+            'PX_OPEN': 'Open',
+            'PX_HIGH': 'High',
+            'PX_LOW': 'Low',
+            'PX_LAST': 'Close',
+            'PX_VOLUME': 'Volume'
+        })
+
+        # 필수 컬럼만 선택
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        df = df[required_cols]
+
+        # NaN 제거
+        df = df.dropna()
+
+        if verbose:
+            print(f"  ✓ {len(df)}개 일봉 데이터 다운로드 완료")
+
+        return df
+
+    except Exception as e:
+        if verbose:
+            print(f"  ✗ 다운로드 실패: {e}")
+        raise
+
+
+def get_security_name(ticker: str) -> str:
+    """
+    Bloomberg 티커에서 종목명 조회
+
+    Parameters:
+    -----------
+    ticker : str
+        Bloomberg 티커 (예: "005930 KS", "AAPL US")
+
+    Returns:
+    --------
+    str : 종목명 (예: "Samsung Electronics Co Ltd", "삼성전자")
+    """
+    try:
+        from xbbg import blp
+    except ImportError:
+        return ticker  # xbbg 없으면 티커 그대로 반환
+
+    try:
+        # Bloomberg 티커 형식 확인 및 조정
+        if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+            ticker = ticker + ' Equity'
+
+        # NAME 필드 조회
+        result = blp.bdp(tickers=ticker, flds='NAME')
+
+        if result is not None and not result.empty:
+            name = result.iloc[0]['NAME']
+            if pd.notna(name):
+                return str(name)
+
+        # NAME이 없으면 티커 반환
+        return ticker.replace(' Equity', '')
+
+    except Exception as e:
+        # 오류 발생시 티커 그대로 반환
+        return ticker.replace(' Equity', '')
+
+
+def get_market_caps(tickers: List[str]) -> dict:
+    """
+    여러 티커의 시가총액을 한번에 조회
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트
+
+    Returns:
+    --------
+    dict : {티커: 시가총액 문자열} 딕셔너리 (예: "1000.0B", "50.0M")
+    """
+    try:
+        from xbbg import blp
+    except ImportError:
+        return {ticker: None for ticker in tickers}
+
+    result_dict = {}
+
+    try:
+        # 티커 형식 조정
+        formatted_tickers = []
+        original_map = {}
+
+        for ticker in tickers:
+            if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+                formatted = ticker + ' Equity'
+            else:
+                formatted = ticker
+            formatted_tickers.append(formatted)
+            original_map[formatted] = ticker
+
+        # CUR_MKT_CAP 필드로 시가총액 조회 (Bloomberg 원본 포맷)
+        try:
+            result = blp.bdp(tickers=formatted_tickers, flds='CUR_MKT_CAP')
+
+            if result is not None and not result.empty:
+                # 컬럼명 찾기
+                column_name = None
+                for col in result.columns:
+                    if col.upper() == 'CUR_MKT_CAP':
+                        column_name = col
+                        break
+
+                if column_name:
+                    # 결과 매핑 (Bloomberg 원본 그대로 반환)
+                    for formatted_ticker, original_ticker in original_map.items():
+                        try:
+                            if formatted_ticker in result.index:
+                                market_cap = result.loc[formatted_ticker, column_name]
+                                if pd.notna(market_cap):
+                                    # 그대로 문자열로 변환 (Bloomberg 원본 포맷 유지)
+                                    result_dict[original_ticker] = str(market_cap)
+                                else:
+                                    result_dict[original_ticker] = None
+                            else:
+                                result_dict[original_ticker] = None
+                        except Exception:
+                            result_dict[original_ticker] = None
+                else:
+                    result_dict = {ticker: None for ticker in tickers}
+            else:
+                result_dict = {ticker: None for ticker in tickers}
+
+        except Exception:
+            result_dict = {ticker: None for ticker in tickers}
+
+    except Exception:
+        result_dict = {ticker: None for ticker in tickers}
+
+    return result_dict
+
+
+def get_korean_stock_names(tickers: List[str]) -> dict:
+    """
+    한국 주식/ETF 한글명 조회
+
+    우선순위:
+    1. bloomberg_ticker.xlsx 한국ETF 시트 (ETF 한글명)
+    2. pykrx (일반 주식 한글명)
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트 (예: "005930 KS")
+
+    Returns:
+    --------
+    dict : {티커: 한글명} 딕셔너리
+    """
+    result_dict = {}
+
+    # KS/KQ 티커만 대상
+    ks_tickers = [t for t in tickers if ' KS' in t or ' KQ' in t]
+    if not ks_tickers:
+        return result_dict
+
+    # ----------------------------------------------------------------
+    # [1단계] bloomberg_ticker.xlsx 한국ETF 시트에서 ETF 한글명 로드
+    # ----------------------------------------------------------------
+    try:
+        import os
+        import pandas as pd
+        # bloomberg.py가 src/ 안에 있으므로 상위 디렉토리의 파일 참조
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        etf_xlsx = os.path.join(base_dir, 'bloomberg_ticker.xlsx')
+        if os.path.exists(etf_xlsx):
+            xl = pd.ExcelFile(etf_xlsx)
+            for sheet in xl.sheet_names:
+                if 'ETF' in sheet:
+                    df = pd.read_excel(etf_xlsx, sheet_name=sheet)
+                    if '티커' in df.columns and '종목명' in df.columns:
+                        for _, row in df.iterrows():
+                            ticker_val = str(row['티커']).strip()
+                            name_val = str(row['종목명']).strip()
+                            if ticker_val and name_val and ticker_val != 'nan':
+                                result_dict[ticker_val] = name_val
+    except Exception:
+        pass
+
+    # ----------------------------------------------------------------
+    # [2단계] pykrx로 일반 주식 한글명 조회 (아직 못 찾은 것만)
+    # ----------------------------------------------------------------
+    remaining = [t for t in ks_tickers if t not in result_dict]
+    if remaining:
+        try:
+            from pykrx import stock as pykrx_stock
+            import warnings
+            warnings.filterwarnings('ignore')
+            for ticker in remaining:
+                code = ticker.split()[0]
+                # 숫자 6자리만 (0008T0 같은 특수 Bloomberg 코드 제외)
+                if not code.isdigit():
+                    continue
+                try:
+                    name = pykrx_stock.get_market_ticker_name(code)
+                    if name and isinstance(name, str) and name.strip():
+                        result_dict[ticker] = name.strip()
+                except Exception:
+                    pass
+        except ImportError:
+            pass
+
+    return result_dict
+
+
+def get_multiple_security_names(tickers: List[str]) -> dict:
+    """
+    여러 티커의 종목명을 한번에 조회 (한글명 우선, 실패시 영문명)
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트
+
+    Returns:
+    --------
+    dict : {티커: 종목명} 딕셔너리
+    """
+    # 1단계: 한국 주식 한글명 조회 시도
+    korean_names = get_korean_stock_names(tickers)
+
+    # 2단계: 한글명을 찾지 못한 티커는 Bloomberg에서 영문명 조회
+    remaining_tickers = [t for t in tickers if t not in korean_names]
+
+    if not remaining_tickers:
+        return korean_names
+
+    try:
+        from xbbg import blp
+    except ImportError:
+        print("  xbbg 라이브러리가 없습니다.")
+        # 한글명과 티커만 반환
+        for ticker in remaining_tickers:
+            korean_names[ticker] = ticker
+        return korean_names
+
+    # 한글명으로 시작
+    result_dict = korean_names.copy()
+
+    try:
+        # remaining_tickers만 Bloomberg에서 조회
+        formatted_tickers = []
+        original_map = {}  # formatted -> original 매핑
+
+        for ticker in remaining_tickers:
+            if not ticker.upper().endswith((' EQUITY', ' INDEX', ' CURNCY', ' COMDTY')):
+                formatted = ticker + ' Equity'
+            else:
+                formatted = ticker
+            formatted_tickers.append(formatted)
+            original_map[formatted] = ticker
+
+        if formatted_tickers:
+            print(f"  Bloomberg 영문명 조회 중: {formatted_tickers[:3]}{'...' if len(formatted_tickers) > 3 else ''}")
+
+        # NAME 필드로 종목명 조회 (영문명)
+        try:
+            result = blp.bdp(tickers=formatted_tickers, flds='NAME')
+
+            if result is not None and not result.empty:
+                column_name = None
+                for col in result.columns:
+                    if col.upper() == 'NAME':
+                        column_name = col
+                        break
+
+                if column_name and result[column_name].notna().any():
+                    if formatted_tickers:
+                        print(f"  ✓ 종목명 조회 성공 (영문명)")
+
+                    # 결과 매핑 (remaining_tickers만)
+                    for formatted_ticker, original_ticker in original_map.items():
+                        try:
+                            if formatted_ticker in result.index:
+                                name = result.loc[formatted_ticker, column_name]
+                                if pd.notna(name):
+                                    result_dict[original_ticker] = str(name)
+                                else:
+                                    result_dict[original_ticker] = original_ticker
+                            else:
+                                result_dict[original_ticker] = original_ticker
+                        except Exception:
+                            result_dict[original_ticker] = original_ticker
+                else:
+                    print(f"  ⚠️  NAME 컬럼을 찾을 수 없습니다.")
+                    for ticker in remaining_tickers:
+                        result_dict[ticker] = ticker
+            else:
+                print(f"  ⚠️  Bloomberg에서 데이터를 가져올 수 없습니다.")
+                for ticker in remaining_tickers:
+                    result_dict[ticker] = ticker
+
+        except Exception as e:
+            print(f"  ✗ 조회 실패: {e}")
+            for ticker in remaining_tickers:
+                result_dict[ticker] = ticker
+
+    except Exception as e:
+        print(f"  ✗ 종목명 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        for ticker in remaining_tickers:
+            result_dict[ticker] = ticker
+
+    return result_dict
+
+
+def download_multiple_tickers(
+    tickers: List[str],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    period: str = '1Y',
+    save_to_file: bool = False,
+    output_dir: str = "."
+) -> dict:
+    """
+    여러 티커의 데이터를 한 번에 다운로드
+
+    Parameters:
+    -----------
+    tickers : List[str]
+        Bloomberg 티커 리스트
+    start_date : str, optional
+        시작 날짜
+    end_date : str, optional
+        종료 날짜
+    period : str
+        데이터 기간 (기본값: '1Y')
+    save_to_file : bool
+        파일로 저장할지 여부 (기본값: False)
+    output_dir : str
+        저장 디렉토리 (기본값: 현재 디렉토리)
+
+    Returns:
+    --------
+    dict : {ticker: DataFrame} 형식의 딕셔너리
+
+    Examples:
+    ---------
+    # 여러 종목 다운로드
+    tickers = ["005930 KS", "000660 KS", "AAPL US"]
+    data = download_multiple_tickers(tickers)
+
+    # 파일로 저장
+    data = download_multiple_tickers(tickers, save_to_file=True, output_dir="./data")
+    """
+    import os
+
+    results = {}
+    failed = []
+
+    print(f"\n{'='*80}")
+    print(f"Bloomberg 일괄 다운로드: {len(tickers)}개 종목")
+    print(f"{'='*80}")
+
+    for i, ticker in enumerate(tickers, 1):
+        print(f"\n[{i}/{len(tickers)}] {ticker}")
+
+        try:
+            # 데이터 다운로드
+            df = download_bloomberg_data(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                period=period
+            )
+
+            # 결과 저장
+            results[ticker] = df
+
+            # 파일로 저장 (옵션)
+            if save_to_file:
+                # 티커에서 파일명 생성 (공백 제거)
+                filename = ticker.replace(" ", "_") + ".xlsx"
+                filepath = os.path.join(output_dir, filename)
+
+                # 디렉토리 생성
+                os.makedirs(output_dir, exist_ok=True)
+
+                # 엑셀로 저장
+                df.to_excel(filepath, index=False)
+                print(f"  ✓ 저장됨: {filepath}")
+
+        except Exception as e:
+            print(f"  ✗ 실패: {e}")
+            failed.append(ticker)
+            continue
+
+    # 요약
+    print(f"\n{'='*80}")
+    print(f"다운로드 완료")
+    print(f"{'='*80}")
+    print(f"성공: {len(results)}개")
+    print(f"실패: {len(failed)}개")
+
+    if failed:
+        print(f"\n실패한 티커:")
+        for ticker in failed:
+            print(f"  - {ticker}")
+
+    return results
+
+
+# 사용 예시
+if __name__ == "__main__":
+    # 예시 1: 단일 종목
+    df = download_bloomberg_data("005930 KS")
+    print(df.tail())
+
+    # 예시 2: 여러 종목
+    tickers = ["005930 KS", "000660 KS", "373220 KS"]
+    data = download_multiple_tickers(tickers, save_to_file=True, output_dir="./data")
